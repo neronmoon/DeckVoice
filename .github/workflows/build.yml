@@ -1,0 +1,47 @@
+name: Build
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install pytest
+      - run: python -m pytest tests/ -q
+
+  plugin:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download Decky CLI
+        run: |
+          curl -fL -o /tmp/decky-cli \
+            https://github.com/SteamDeckHomebrew/cli/releases/download/0.0.7/decky-linux-x86_64
+          chmod +x /tmp/decky-cli
+
+      - name: Build plugin
+        run: sudo /tmp/decky-cli plugin build -b -t /tmp/deckvoice-decky-build -o build-output -s directory .
+
+      - name: Validate artifact
+        run: |
+          zip=$(find build-output -name '*.zip' | head -1)
+          test -n "$zip"
+          unzip -t "$zip"
+          unzip -l "$zip" | grep -q 'bin/whisper-server'
+          unzip -l "$zip" | grep -q 'bin/ydotoold'
+          unzip -l "$zip" | grep -q 'bin/lib/libggml'
+          unzip -l "$zip" | grep -q 'cpython-311'
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DeckVoice
+          path: build-output/*.zip

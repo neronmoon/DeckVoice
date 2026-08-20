@@ -1,0 +1,22 @@
+{
+  "name": "DeckVoice",
+  "version": "0.1.0",
+  "author": "DeckVoice",
+  "flags": [
+    "_root"
+  ],
+  "api_version": 1,
+  "publish": {
+    "tags": [
+      "voice",
+      "dictation",
+      "speech-to-text",
+      "input",
+      "chat",
+      "gaming",
+      "accessibility"
+    ],
+    "description": "GPU push-to-talk voice input for Steam Deck with live preview and game profiles.",
+    "image": ""
+  }
+}
