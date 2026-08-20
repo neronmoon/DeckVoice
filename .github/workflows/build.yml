@@ -36,13 +36,13 @@ jobs:
           docker run --rm --platform=linux/amd64 \
             -e HOST_UID="$(id -u)" \
             -e HOST_GID="$(id -g)" \
-            -v "$GITHUB_WORKSPACE/backend:/backend" \
             -v "$GITHUB_WORKSPACE/bin:/backend/out" \
             deckvoice-backend
 
       - name: Stage backend out
         run: |
           test -x bin/whisper-server
+          sudo rm -rf backend/out
           mkdir -p backend/out
           cp -a bin/. backend/out/
 

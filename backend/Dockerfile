@@ -78,5 +78,6 @@ RUN git init /ydotool-src \
         /ydotool-src/Client/tool_key.c
 
 COPY --from=whisper-build /whisper-out/ /whisper-build/
+COPY entrypoint.sh /backend/entrypoint.sh
 
 ENTRYPOINT ["/backend/entrypoint.sh"]

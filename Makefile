@@ -23,7 +23,6 @@ bin:
 	docker run --rm --platform=linux/amd64 \
 		-e HOST_UID=$(shell id -u) \
 		-e HOST_GID=$(shell id -g) \
-		-v "$(CURDIR)/backend:/backend" \
 		-v "$(CURDIR)/bin:/backend/out" \
 		deckvoice-backend
 
