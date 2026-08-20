@@ -490,8 +490,6 @@ class Plugin:
             "server_ready": bool(vs and vs.server_ready),
             "model_loading": bool(vs and vs.model_loading),
             "model_load_error": vs.model_load_error if vs else None,
-            "preview_text": vs.preview_text if vs else "",
-            "last_transcription": vs.last_transcription if vs else None,
             "recording_start_count": Plugin.recording_start_count,
             "button_state": button_state,
             "game": Plugin.active_preset,

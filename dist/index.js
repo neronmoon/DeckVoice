@@ -5,7 +5,7 @@
 
     var React__default = /*#__PURE__*/_interopDefaultLegacy(React);
 
-    var _manifest = {"name":"DeckVoice","version":"0.1.0","author":"DeckVoice","flags":["_root"],"api_version":1,"publish":{"tags":["voice","dictation","speech-to-text","input","chat","gaming","accessibility"],"description":"GPU push-to-talk voice input for Steam Deck with live preview and game profiles.","image":""}};
+    var _manifest = {"name":"DeckVoice","version":"0.1.0","author":"DeckVoice","flags":["_root"],"api_version":1,"publish":{"tags":["voice","dictation","speech-to-text","input","chat","gaming","accessibility"],"description":"GPU push-to-talk voice input for Steam Deck with game profiles.","image":""}};
 
     const manifest = _manifest;
     const API_VERSION = 2;
@@ -199,27 +199,17 @@
             fontWeight: on ? 600 : 400,
             opacity: on ? 1 : 0.55,
         } }, name));
-    const StatusLine = ({ label, preview, failed, }) => (React__default["default"].createElement("div", { style: { padding: "4px 0 8px" } },
+    const StatusLine = ({ label, failed, }) => (React__default["default"].createElement("div", { style: { padding: "4px 0 8px" } },
         React__default["default"].createElement("div", { style: {
                 fontSize: "14px",
                 opacity: failed ? 1 : 0.85,
                 color: failed ? "#ff8a8a" : undefined,
             } }, label),
-        preview ? (React__default["default"].createElement("div", { style: {
-                marginTop: "6px",
-                fontSize: "15px",
-                lineHeight: 1.35,
-                opacity: 0.95,
-            } },
-            "\u201C",
-            preview,
-            "\u201D")) : null,
         failed ? (React__default["default"].createElement("div", { style: { marginTop: "4px", fontSize: "12px", opacity: 0.65 } }, "See /tmp/deckvoice.log")) : null));
     const DeckVoicePanel = () => {
         const [enabled, setEnabled] = React.useState(false);
         const [busy, setBusy] = React.useState(false);
         const [statusLabel, setStatusLabel] = React.useState("Off");
-        const [preview, setPreview] = React.useState("");
         const [failed, setFailed] = React.useState(false);
         const [buttons, setButtons] = React.useState(["L1", "R1"]);
         const [game, setGame] = React.useState("wow");
@@ -243,7 +233,6 @@
         };
         const applyStatus = (status) => {
             setStatusLabel(friendlyStatus(status));
-            setPreview((status.preview_text || "").trim());
             setFailed(!!status.enabled && (!!status.model_load_error || status.status === "error"));
             if (status.profileEnabled !== undefined) {
                 setEnabled(!!status.profileEnabled);
@@ -346,7 +335,7 @@
                                 ? "GPU Whisper. Off frees VRAM."
                                 : "Launch a game to enable", checked: enabled, disabled: busy || !inGame, onChange: onToggleEnabled })),
                 React__default["default"].createElement(deckyFrontendLib.PanelSectionRow, null,
-                    React__default["default"].createElement(StatusLine, { label: statusLabel, preview: preview, failed: failed }))),
+                    React__default["default"].createElement(StatusLine, { label: statusLabel, failed: failed }))),
             React__default["default"].createElement(deckyFrontendLib.PanelSection, { title: "Recognition" },
                 React__default["default"].createElement(deckyFrontendLib.PanelSectionRow, null,
                     React__default["default"].createElement(deckyFrontendLib.DropdownItem, { label: "Model", rgOptions: modelOptions, selectedOption: whisperModel, disabled: busy, onChange: async (option) => {

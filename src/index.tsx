@@ -110,9 +110,8 @@ const ComboChip: VFC<{ name: string; on: boolean; onToggle: () => void }> = ({
 	</Focusable>
 );
 
-const StatusLine: VFC<{ label: string; preview: string; failed: boolean }> = ({
+const StatusLine: VFC<{ label: string; failed: boolean }> = ({
 	label,
-	preview,
 	failed,
 }) => (
 	<div style={{ padding: "4px 0 8px" }}>
@@ -125,18 +124,6 @@ const StatusLine: VFC<{ label: string; preview: string; failed: boolean }> = ({
 		>
 			{label}
 		</div>
-		{preview ? (
-			<div
-				style={{
-					marginTop: "6px",
-					fontSize: "15px",
-					lineHeight: 1.35,
-					opacity: 0.95,
-				}}
-			>
-				“{preview}”
-			</div>
-		) : null}
 		{failed ? (
 			<div style={{ marginTop: "4px", fontSize: "12px", opacity: 0.65 }}>
 				See /tmp/deckvoice.log
@@ -149,7 +136,6 @@ const DeckVoicePanel: VFC = () => {
 	const [enabled, setEnabled] = useState(false);
 	const [busy, setBusy] = useState(false);
 	const [statusLabel, setStatusLabel] = useState("Off");
-	const [preview, setPreview] = useState("");
 	const [failed, setFailed] = useState(false);
 	const [buttons, setButtons] = useState<string[]>(["L1", "R1"]);
 	const [game, setGame] = useState("wow");
@@ -174,7 +160,6 @@ const DeckVoicePanel: VFC = () => {
 
 	const applyStatus = (status: RpcResponse) => {
 		setStatusLabel(friendlyStatus(status));
-		setPreview((status.preview_text || "").trim());
 		setFailed(!!status.enabled && (!!status.model_load_error || status.status === "error"));
 		if (status.profileEnabled !== undefined) {
 			setEnabled(!!status.profileEnabled);
@@ -292,7 +277,7 @@ const DeckVoicePanel: VFC = () => {
 					/>
 				</PanelSectionRow>
 				<PanelSectionRow>
-					<StatusLine label={statusLabel} preview={preview} failed={failed} />
+					<StatusLine label={statusLabel} failed={failed} />
 				</PanelSectionRow>
 			</PanelSection>
 

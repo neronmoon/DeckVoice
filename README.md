@@ -1,6 +1,6 @@
 # DeckVoice
 
-GPU push-to-talk voice input for Steam Deck (Decky Loader). Hold a trigger combo, see live transcription in a Steam toast, release to type into the focused game chat.
+GPU push-to-talk voice input for Steam Deck (Decky Loader). Hold a trigger combo, release to type into the focused game chat.
 
 ## Layout
 
@@ -23,7 +23,7 @@ tests/
 ## Features
 
 - **Trigger combo** (default L1+R1) via raw Steam Deck HID
-- Live preview in a Steam toast while held; chat insert only on release
+- Chat insert on release
 - **Enable** fully starts/stops `whisper-server` (Vulkan), HID listener, and `ydotoold` so VRAM is free when off
 - Model size and language in QAM
 - Game profiles: **World of Warcraft** (`party hello` → `/p hello`) and **Generic**

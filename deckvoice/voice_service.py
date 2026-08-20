@@ -154,9 +154,6 @@ class VoiceService:
         self.sample_rate = 16000
         self.input_channels = 1
         self.recording_lock = threading.Lock()
-        self.preview_text = ""
-        self.last_transcription = None
-        self.last_transcription_time = None
         self.status = "off"
 
         self._load_language_config()
@@ -492,7 +489,6 @@ class VoiceService:
             if self.is_recording:
                 return
             self.is_recording = True
-            self.preview_text = ""
             with self.audio_lock:
                 self.audio_chunks = []
             self.status = "recording"
@@ -522,7 +518,6 @@ class VoiceService:
             write_vu([0.0] * VU_BARS)
             self.status = "transcribing"
             if not pcm:
-                self.preview_text = ""
                 self.status = "listening"
                 return
 
@@ -530,9 +525,6 @@ class VoiceService:
             t0 = time.monotonic()
             text = self._inference(pcm16, 16000)
             logger.info("inference %.2fs (%d bytes)", time.monotonic() - t0, len(pcm16))
-            self.preview_text = text
-            self.last_transcription = text
-            self.last_transcription_time = time.time()
             if text and send:
                 self.send_to_chat(text)
             self.status = "listening"
