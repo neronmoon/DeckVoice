@@ -49,6 +49,20 @@ VU_FILE = "/tmp/deckvoice_vu"
 VU_BARS = 8
 
 
+def to_mono(pcm_int16: bytes, channels: int) -> bytes:
+    if channels <= 1:
+        return pcm_int16
+    n = len(pcm_int16) // 2
+    samples = struct.unpack_from(f"<{n}h", pcm_int16)
+    out = []
+    for i in range(0, n - channels + 1, channels):
+        acc = 0
+        for c in range(channels):
+            acc += samples[i + c]
+        out.append(acc // channels)
+    return struct.pack(f"<{len(out)}h", *out)
+
+
 def vu_levels(pcm_int16: bytes, bars=VU_BARS) -> list:
     n = len(pcm_int16) // 2
     if n < bars:
@@ -138,6 +152,7 @@ class VoiceService:
         self.audio_chunks = []
         self.audio_lock = threading.Lock()
         self.sample_rate = 16000
+        self.input_channels = 1
         self.recording_lock = threading.Lock()
         self.preview_text = ""
         self.last_transcription = None
@@ -444,7 +459,7 @@ class VoiceService:
     def audio_callback(self, indata, frames, time_info, status):
         if not self.is_recording:
             return
-        raw = bytes(indata)
+        raw = to_mono(bytes(indata), self.input_channels)
         with self.audio_lock:
             self.audio_chunks.append(raw)
         write_vu(vu_levels(raw))
@@ -484,9 +499,10 @@ class VoiceService:
 
             device_info = sd.query_devices(sd.default.device[0], "input")
             self.sample_rate = int(device_info["default_samplerate"])
+            self.input_channels = 2 if device_info["max_input_channels"] >= 2 else 1
             self.recording_stream = sd.InputStream(
                 samplerate=self.sample_rate,
-                channels=1,
+                channels=self.input_channels,
                 callback=self.audio_callback,
                 dtype="int16",
             )

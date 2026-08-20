@@ -212,3 +212,15 @@ def test_vu_levels_loud_pcm_fills_bars():
     levels = vu_levels(pcm)
     assert len(levels) == 8
     assert all(v > 0.7 for v in levels)
+
+
+def test_to_mono_mixes_left_and_right():
+    import struct
+
+    from deckvoice.voice_service import to_mono
+
+    left = struct.pack("<hh", 20000, 0) * 4
+    right = struct.pack("<hh", 0, 20000) * 4
+    assert to_mono(left, 2) == to_mono(right, 2) == struct.pack("<h", 10000) * 4
+    mono = struct.pack("<h", 1234) * 4
+    assert to_mono(mono, 1) is mono
