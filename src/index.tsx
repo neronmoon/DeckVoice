@@ -46,6 +46,7 @@ function friendlyStatus(status: RpcResponse | null): string {
 	if (status.model_loading) return "Starting…";
 	if (status.status === "error" || status.model_load_error) return "Failed to start";
 	if (status.recording) return "Listening";
+	if (status.status === "transcribing") return "Sending…";
 	if (status.server_ready || status.status === "listening") return "Ready";
 	if (status.status === "loading") return "Starting…";
 	return "Off";
@@ -57,6 +58,7 @@ class DeckVoiceLogic {
 	toast: { dismiss: () => void } | null = null;
 	lastPreview = "";
 	pollInFlight = false;
+	hideTimer: ReturnType<typeof setTimeout> | null = null;
 
 	show(body: string) {
 		this.hide();
@@ -72,10 +74,18 @@ class DeckVoiceLogic {
 	}
 
 	hide() {
+		this.clearHideTimer();
 		try {
 			this.toast?.dismiss();
 		} catch (_e) {}
 		this.toast = null;
+	}
+
+	clearHideTimer() {
+		if (this.hideTimer) {
+			clearTimeout(this.hideTimer);
+			this.hideTimer = null;
+		}
 	}
 
 	poll = async () => {
@@ -91,15 +101,21 @@ class DeckVoiceLogic {
 				this.show("Listening…");
 			}
 
-			if (status.recording) {
-				const preview = (status.preview_text || "").trim();
-				if (preview && preview !== this.lastPreview) {
-					this.lastPreview = preview;
-					this.show(preview);
-				}
-			} else if (this.toast) {
-				this.hide();
-				this.lastPreview = "";
+			const busy = !!(status.recording || status.status === "transcribing");
+			const preview = (status.preview_text || "").trim();
+			if (preview && preview !== this.lastPreview) {
+				this.lastPreview = preview;
+				this.show(preview);
+			}
+
+			if (busy) {
+				this.clearHideTimer();
+			} else if (this.toast && !this.hideTimer) {
+				this.hideTimer = setTimeout(() => {
+					this.hideTimer = null;
+					this.hide();
+					this.lastPreview = "";
+				}, 1500);
 			}
 		} catch (_e) {
 		} finally {

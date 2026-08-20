@@ -416,20 +416,26 @@ class VoiceService:
                 self.recording_stream.stop()
                 self.recording_stream.close()
                 self.recording_stream = None
+            thread = self.preview_thread
+            self.preview_thread = None
 
             pcm = self._drain_pcm()
-            self.status = "listening"
+            self.status = "transcribing"
+            if thread:
+                thread.join(timeout=30)
             if not pcm:
                 self.preview_text = ""
+                self.status = "listening"
                 return
 
             pcm16 = self._resample_to_16k(pcm, self.sample_rate)
             text = self._inference(pcm16, 16000)
-            self.preview_text = ""
+            self.preview_text = text
             self.last_transcription = text
             self.last_transcription_time = time.time()
             if text and send:
                 self.send_to_chat(text)
+            self.status = "listening"
 
     def parse_channel_and_text(self, text):
         text = text.strip()

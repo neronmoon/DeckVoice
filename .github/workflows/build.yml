@@ -34,10 +34,11 @@ jobs:
           docker build --platform=linux/amd64 -t deckvoice-backend ./backend
           mkdir -p bin
           docker run --rm --platform=linux/amd64 \
+            -e HOST_UID="$(id -u)" \
+            -e HOST_GID="$(id -g)" \
             -v "$GITHUB_WORKSPACE/backend:/backend" \
             -v "$GITHUB_WORKSPACE/bin:/backend/out" \
             deckvoice-backend
-          chmod +x bin/whisper-server bin/ydotool bin/ydotoold
 
       - name: Stage backend out
         run: |

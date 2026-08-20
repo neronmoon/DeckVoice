@@ -21,10 +21,11 @@ bin:
 	docker build --platform=linux/amd64 -t deckvoice-backend ./backend
 	mkdir -p bin
 	docker run --rm --platform=linux/amd64 \
+		-e HOST_UID=$(shell id -u) \
+		-e HOST_GID=$(shell id -g) \
 		-v "$(CURDIR)/backend:/backend" \
 		-v "$(CURDIR)/bin:/backend/out" \
 		deckvoice-backend
-	chmod +x bin/whisper-server bin/ydotool bin/ydotoold
 
 artifact:
 	rm -rf $(ARTIFACT_DIR)

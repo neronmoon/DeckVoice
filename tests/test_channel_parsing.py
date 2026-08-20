@@ -129,3 +129,16 @@ class TestWavAndMultipart:
         wow_svc.preview_stop.set()
         thread.join(timeout=1)
         assert wow_svc.preview_text == "hello"
+
+    def test_stop_keeps_final_preview(self, wow_svc):
+        wow_svc.server_ready = True
+        wow_svc.is_recording = True
+        wow_svc.sample_rate = 16000
+        wow_svc.audio_chunks = [b"\x00\x00" * 8000]
+        wow_svc.preview_text = "hello"
+        wow_svc._inference = lambda pcm, sr: "hello world"
+        wow_svc.stop_recording(send=False)
+        assert wow_svc.preview_text == "hello world"
+        assert wow_svc.last_transcription == "hello world"
+        assert wow_svc.status == "listening"
+        assert wow_svc.is_recording is False

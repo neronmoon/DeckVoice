@@ -149,6 +149,8 @@
             return "Failed to start";
         if (status.recording)
             return "Listening";
+        if (status.status === "transcribing")
+            return "Sending…";
         if (status.server_ready || status.status === "listening")
             return "Ready";
         if (status.status === "loading")
@@ -162,6 +164,7 @@
             this.toast = null;
             this.lastPreview = "";
             this.pollInFlight = false;
+            this.hideTimer = null;
             this.poll = async () => {
                 if (!this.enabled || this.pollInFlight)
                     return;
@@ -175,16 +178,21 @@
                         this.lastPreview = "";
                         this.show("Listening…");
                     }
-                    if (status.recording) {
-                        const preview = (status.preview_text || "").trim();
-                        if (preview && preview !== this.lastPreview) {
-                            this.lastPreview = preview;
-                            this.show(preview);
-                        }
+                    const busy = !!(status.recording || status.status === "transcribing");
+                    const preview = (status.preview_text || "").trim();
+                    if (preview && preview !== this.lastPreview) {
+                        this.lastPreview = preview;
+                        this.show(preview);
                     }
-                    else if (this.toast) {
-                        this.hide();
-                        this.lastPreview = "";
+                    if (busy) {
+                        this.clearHideTimer();
+                    }
+                    else if (this.toast && !this.hideTimer) {
+                        this.hideTimer = setTimeout(() => {
+                            this.hideTimer = null;
+                            this.hide();
+                            this.lastPreview = "";
+                        }, 1500);
                     }
                 }
                 catch (_e) {
@@ -208,11 +216,18 @@
             catch (_e) { }
         }
         hide() {
+            this.clearHideTimer();
             try {
                 this.toast?.dismiss();
             }
             catch (_e) { }
             this.toast = null;
+        }
+        clearHideTimer() {
+            if (this.hideTimer) {
+                clearTimeout(this.hideTimer);
+                this.hideTimer = null;
+            }
         }
     }
     const logic = new DeckVoiceLogic();
