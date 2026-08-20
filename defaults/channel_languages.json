@@ -21,7 +21,11 @@
         "instance": ["instance"],
         "whisper": ["whisper"],
         "type": ["type"],
-        "alert": ["alert"]
+        "alert": ["alert"],
+        "general": ["general"],
+        "trade": ["trade"],
+        "localdefense": ["local defense"],
+        "lfg": ["lfg", "looking for group"]
       }
     },
     "fr": {
@@ -213,7 +217,11 @@
         "instance": ["инстанс", "подземелье"],
         "whisper": ["шепни", "шепнуть"],
         "type": ["набери", "написать"],
-        "alert": ["алерт", "предупреждение", "alert"]
+        "alert": ["алерт", "предупреждение", "alert"],
+        "general": ["общий", "general"],
+        "trade": ["торговля", "трейд", "trade"],
+        "localdefense": ["оборона", "локальная оборона"],
+        "lfg": ["лфг", "поиск группы", "lfg"]
       }
     },
     "tr": {
@@ -371,7 +379,11 @@
     "instance": "/i ",
     "whisper": "/w ",
     "type": "",
-    "alert": "/rw "
+    "alert": "/rw ",
+    "general": "/1 ",
+    "trade": "/2 ",
+    "localdefense": "/3 ",
+    "lfg": "/4 "
   },
   "enabled_languages": [
     "en", "fr", "de", "es", "pt", "it", "nl", "pl", "ru", "tr",

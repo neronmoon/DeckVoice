@@ -6,6 +6,7 @@ import os
 import ssl
 import struct
 import subprocess
+import sys
 import threading
 import time
 import urllib.error
@@ -96,7 +97,6 @@ class VoiceService:
         self.ca_file = ca_file
         self.default_channel = self.preset.get("default_channel", "say")
         self.channel_commands = self.preset.get("channels") or {"type": ""}
-        self.whisper_prompt = self.preset.get("whisper_prompt", "")
 
         self.server_process = None
         self.server_ready = False
@@ -111,8 +111,6 @@ class VoiceService:
         self.audio_lock = threading.Lock()
         self.sample_rate = 16000
         self.recording_lock = threading.Lock()
-        self.preview_thread = None
-        self.preview_stop = threading.Event()
         self.preview_text = ""
         self.last_transcription = None
         self.last_transcription_time = None
@@ -145,7 +143,6 @@ class VoiceService:
         self.preset = preset or {}
         self.default_channel = self.preset.get("default_channel", "say")
         self.channel_commands = self.preset.get("channels") or {"type": ""}
-        self.whisper_prompt = self.preset.get("whisper_prompt", "")
 
     def _ggml_model_path(self):
         return self.models_dir / GGML_MODEL_FILES[self.model_size]
@@ -205,8 +202,6 @@ class VoiceService:
                 "-sns",
                 "--no-flash-attn",
             ]
-            if self.whisper_prompt:
-                cmd.extend(["--prompt", self.whisper_prompt])
 
             env = self._server_env()
             logger.info(
@@ -221,6 +216,7 @@ class VoiceService:
                 text=True,
                 env=env,
                 cwd=str(self.plugin_dir / "bin"),
+                start_new_session=True,
             )
             logger.info("whisper-server pid=%s", self.server_process.pid)
             self._server_log_thread = threading.Thread(target=self._log_server, daemon=True)
@@ -297,17 +293,49 @@ class VoiceService:
         except Exception:
             return False
 
+    def _whisper_binary(self):
+        return os.path.realpath(self.plugin_dir / "bin" / "whisper-server")
+
+    def _reap_whisper_servers(self):
+        binary = self._whisper_binary()
+        if not os.path.isfile(binary) or not os.path.isdir("/proc"):
+            return
+        for entry in os.scandir("/proc"):
+            if not entry.name.isdigit():
+                continue
+            try:
+                exe = os.path.realpath(f"/proc/{entry.name}/exe")
+            except OSError:
+                continue
+            if exe != binary:
+                continue
+            pid = int(entry.name)
+            try:
+                os.kill(pid, 9)
+            except OSError:
+                pass
+            try:
+                os.waitpid(pid, os.WNOHANG)
+            except OSError:
+                pass
+
     def stop_whisper_server(self):
         self.server_ready = False
         process = self.server_process
         self.server_process = None
         if process and process.poll() is None:
-            process.terminate()
             try:
-                process.wait(timeout=3)
-            except subprocess.TimeoutExpired:
-                process.kill()
+                os.killpg(process.pid, 9)
+            except OSError:
+                try:
+                    process.kill()
+                except OSError:
+                    pass
+            try:
                 process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                pass
+        self._reap_whisper_servers()
         self.status = "off"
 
     def _inference(self, pcm_int16: bytes, sample_rate: int) -> str:
@@ -319,8 +347,6 @@ class VoiceService:
             "response_format": "json",
             "language": self.language,
         }
-        if self.whisper_prompt:
-            fields["prompt"] = self.whisper_prompt
         body, headers = _multipart(fields, "file", "audio.wav", wav, "audio/wav")
         req = urllib.request.Request(
             f"http://{WHISPER_SERVER_HOST}:{WHISPER_SERVER_PORT}/inference",
@@ -341,10 +367,6 @@ class VoiceService:
         if self.is_recording:
             with self.audio_lock:
                 self.audio_chunks.append(bytes(indata))
-
-    def _snapshot_pcm(self) -> bytes:
-        with self.audio_lock:
-            return b"".join(self.audio_chunks)
 
     def _drain_pcm(self) -> bytes:
         with self.audio_lock:
@@ -375,7 +397,6 @@ class VoiceService:
                 return
             self.is_recording = True
             self.preview_text = ""
-            self.preview_stop.clear()
             with self.audio_lock:
                 self.audio_chunks = []
             self.status = "recording"
@@ -389,47 +410,28 @@ class VoiceService:
                 dtype="int16",
             )
             self.recording_stream.start()
-            self.preview_thread = threading.Thread(target=self._preview_loop, daemon=True)
-            self.preview_thread.start()
-
-    def _preview_loop(self):
-        last_len = 0
-        while not self.preview_stop.is_set():
-            pcm = self._snapshot_pcm()
-            pcm16 = self._resample_to_16k(pcm, self.sample_rate) if pcm else b""
-            if len(pcm) <= last_len or len(pcm16) < MIN_INFERENCE_BYTES:
-                if self.preview_stop.wait(0.05):
-                    break
-                continue
-            text = self._inference(pcm16, 16000)
-            last_len = len(pcm)
-            if text:
-                self.preview_text = text
 
     def stop_recording(self, send=True):
         with self.recording_lock:
             if not self.is_recording:
                 return
             self.is_recording = False
-            self.preview_stop.set()
             if self.recording_stream:
                 self.recording_stream.stop()
                 self.recording_stream.close()
                 self.recording_stream = None
-            thread = self.preview_thread
-            self.preview_thread = None
 
             pcm = self._drain_pcm()
             self.status = "transcribing"
-            if thread:
-                thread.join(timeout=30)
             if not pcm:
                 self.preview_text = ""
                 self.status = "listening"
                 return
 
             pcm16 = self._resample_to_16k(pcm, self.sample_rate)
+            t0 = time.monotonic()
             text = self._inference(pcm16, 16000)
+            logger.info("inference %.2fs (%d bytes)", time.monotonic() - t0, len(pcm16))
             self.preview_text = text
             self.last_transcription = text
             self.last_transcription_time = time.time()
@@ -480,7 +482,75 @@ class VoiceService:
         if open_key == "enter":
             subprocess.run([ydotool, "key", "28:1", "28:0"], capture_output=True, text=True, env=env)
             time.sleep(0.1)
-        subprocess.run([ydotool, "type", "--", full_message], capture_output=True, text=True, env=env)
+        self._type_text(ydotool, env, full_message)
         time.sleep(0.1)
         if send_key == "enter":
             subprocess.run([ydotool, "key", "28:1", "28:0"], capture_output=True, text=True, env=env)
+
+    def _set_clipboard(self, text: str) -> bool:
+        script = (
+            "import sys\n"
+            "text=sys.stdin.read()\n"
+            "ok=False\n"
+            "try:\n"
+            " import gi\n"
+            " gi.require_version('Gtk','3.0')\n"
+            " gi.require_version('Gdk','3.0')\n"
+            " from gi.repository import Gtk,Gdk,GLib\n"
+            " Gtk.init([])\n"
+            " cb=Gtk.Clipboard.get_default(Gdk.Display.get_default())\n"
+            " cb.set_text(text,-1)\n"
+            " cb.store()\n"
+            " GLib.timeout_add(120,Gtk.main_quit)\n"
+            " Gtk.main()\n"
+            " ok=True\n"
+            "except Exception:\n"
+            " try:\n"
+            "  import tkinter\n"
+            "  r=tkinter.Tk(); r.withdraw()\n"
+            "  r.clipboard_clear(); r.clipboard_append(text); r.update()\n"
+            "  r.after(120,r.destroy); r.mainloop(); ok=True\n"
+            " except Exception:\n"
+            "  pass\n"
+            "sys.exit(0 if ok else 1)\n"
+        )
+        env = os.environ.copy()
+        env["LANG"] = "en_US.UTF-8"
+        env["LC_ALL"] = "en_US.UTF-8"
+        xauth = "/home/deck/.Xauthority"
+        if os.path.isfile(xauth):
+            env["XAUTHORITY"] = xauth
+        python = "/usr/bin/python3" if os.path.isfile("/usr/bin/python3") else sys.executable
+        for display in (":1", ":0"):
+            env["DISPLAY"] = display
+            cmd = [python, "-c", script]
+            if os.geteuid() == 0:
+                cmd = [
+                    "runuser", "-u", "deck", "--", "env",
+                    f"DISPLAY={display}",
+                    f"XAUTHORITY={env.get('XAUTHORITY', '')}",
+                    "HOME=/home/deck",
+                    "LANG=en_US.UTF-8",
+                    python, "-c", script,
+                ]
+            try:
+                r = subprocess.run(
+                    cmd, input=text, text=True, capture_output=True, env=env, timeout=3,
+                )
+            except (FileNotFoundError, subprocess.TimeoutExpired):
+                continue
+            if r.returncode == 0:
+                return True
+        logger.warning("clipboard set failed")
+        return False
+
+    def _type_text(self, ydotool, env, text):
+        if self._set_clipboard(text):
+            subprocess.run(
+                [ydotool, "key", "29:1", "47:1", "47:0", "29:0"],
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+            return
+        subprocess.run([ydotool, "type", "--", text], capture_output=True, text=True, env=env)

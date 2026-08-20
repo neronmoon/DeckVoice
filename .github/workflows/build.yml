@@ -46,6 +46,9 @@ jobs:
           mkdir -p backend/out
           cp -a bin/. backend/out/
 
+      - name: Stage python package
+        run: cp -a deckvoice defaults/deckvoice
+
       - name: Download Decky CLI
         run: |
           curl -fL -o /tmp/decky-cli \
@@ -64,6 +67,7 @@ jobs:
           unzip -l "$zip" | grep -q 'bin/ydotoold'
           unzip -l "$zip" | grep -q 'bin/lib/libggml'
           unzip -l "$zip" | grep -q 'cpython-311'
+          unzip -l "$zip" | grep -q 'deckvoice/plugin.py'
 
       - uses: actions/upload-artifact@v4
         with:

@@ -38,6 +38,9 @@ deploy: test artifact
 	src=$(STAGING); \
 	if [ -f $(STAGING)/DeckVoice/plugin.json ]; then src=$(STAGING)/DeckVoice; \
 	elif [ ! -f $(STAGING)/plugin.json ]; then echo "no plugin.json in artifact" >&2; exit 1; fi; \
+	rsync -a --exclude __pycache__ deckvoice/ "$$src/deckvoice/"; \
+	mkdir -p "$$src/dist"; \
+	rsync -a dist/ "$$src/dist/"; \
 	ssh $(DECK_USER)@$(DECK_HOST) 'sudo mkdir -p $(DECK_PLUGIN)'; \
 	rsync -rlvz --delete --rsync-path="sudo rsync" --exclude models \
 		"$$src"/ $(DECK_USER)@$(DECK_HOST):$(DECK_PLUGIN)/; \

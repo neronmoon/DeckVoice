@@ -1,5 +1,6 @@
 import {
 	definePlugin,
+	findSP,
 	PanelSection,
 	PanelSectionRow,
 	ToggleField,
@@ -52,40 +53,78 @@ function friendlyStatus(status: RpcResponse | null): string {
 	return "Off";
 }
 
+function toastDocs(): Document[] {
+	const docs = new Set<Document>([document]);
+	try {
+		const sp = findSP()?.document;
+		if (sp) docs.add(sp);
+	} catch {}
+	return [...docs];
+}
+
+function isDeckVoiceToast(item: any): boolean {
+	const title = item?.data?.title ?? item?.title;
+	return item?.decky === true || title === "DeckVoice";
+}
+
+function reapToasts() {
+	const store = (window as any).NotificationStore;
+	if (store?.RemoveGroupFromTray) {
+		const buckets = [
+			store.m_rgTrayGroups,
+			store.m_rgNotificationGroups,
+			store.m_rgNotificationToasts,
+			store.m_rgToasts,
+			store.m_rgNotifications,
+		];
+		for (const bucket of buckets) {
+			if (!Array.isArray(bucket)) continue;
+			for (const group of [...bucket]) {
+				const notes = group?.notifications || [group];
+				if (notes.some(isDeckVoiceToast)) {
+					try {
+						store.RemoveGroupFromTray(group);
+					} catch (_e) {}
+				}
+			}
+		}
+	}
+	for (const doc of toastDocs()) {
+		const roots = doc.querySelectorAll(
+			"[class*='notificationtoasts'],[class*='ToastManager'],[class*='toastmanager']"
+		);
+		for (const root of Array.from(roots)) {
+			for (const child of Array.from(root.children)) {
+				if ((child.textContent || "").includes("DeckVoice")) child.remove();
+			}
+		}
+	}
+}
+
 class DeckVoiceLogic {
 	enabled = false;
 	prevRecordingStartCount = 0;
-	toast: { dismiss: () => void } | null = null;
-	lastPreview = "";
 	pollInFlight = false;
-	hideTimer: ReturnType<typeof setTimeout> | null = null;
+	toastHandle: { dismiss: () => void } | null = null;
 
 	show(body: string) {
-		this.hide();
-		try {
-			this.toast = toaster.toast({
-				title: "DeckVoice",
-				body,
-				duration: 60000,
-				critical: false,
-				playSound: false,
-			});
-		} catch (_e) {}
+		if (this.toastHandle) return;
+		this.toastHandle = toaster.toast({
+			title: "DeckVoice",
+			body,
+			duration: 2000,
+			expiration: 2000,
+			critical: false,
+			playSound: false,
+		});
 	}
 
 	hide() {
-		this.clearHideTimer();
 		try {
-			this.toast?.dismiss();
+			this.toastHandle?.dismiss();
 		} catch (_e) {}
-		this.toast = null;
-	}
-
-	clearHideTimer() {
-		if (this.hideTimer) {
-			clearTimeout(this.hideTimer);
-			this.hideTimer = null;
-		}
+		this.toastHandle = null;
+		reapToasts();
 	}
 
 	poll = async () => {
@@ -97,25 +136,10 @@ class DeckVoiceLogic {
 
 			if (status.recording_start_count > this.prevRecordingStartCount) {
 				this.prevRecordingStartCount = status.recording_start_count;
-				this.lastPreview = "";
+				this.hide();
 				this.show("Listening…");
-			}
-
-			const busy = !!(status.recording || status.status === "transcribing");
-			const preview = (status.preview_text || "").trim();
-			if (preview && preview !== this.lastPreview) {
-				this.lastPreview = preview;
-				this.show(preview);
-			}
-
-			if (busy) {
-				this.clearHideTimer();
-			} else if (this.toast && !this.hideTimer) {
-				this.hideTimer = setTimeout(() => {
-					this.hideTimer = null;
-					this.hide();
-					this.lastPreview = "";
-				}, 1500);
+			} else if (!status.recording) {
+				this.hide();
 			}
 		} catch (_e) {
 		} finally {

@@ -309,6 +309,7 @@ class Plugin:
                 language=config["whisperLanguage"],
                 ca_file=CA_FILE,
             )
+            Plugin.voice_service.stop_whisper_server()
             if config.get("enabled"):
                 logger.info("Restoring enabled state")
                 Plugin._start_runtime()

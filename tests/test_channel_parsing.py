@@ -72,6 +72,11 @@ class TestWoWChannels:
             ("whisper", "whisper"),
             ("type", "type"),
             ("alert", "alert"),
+            ("general", "general"),
+            ("trade", "trade"),
+            ("local defense", "localdefense"),
+            ("lfg", "lfg"),
+            ("looking for group", "lfg"),
         ],
     )
     def test_channel_prefix_recognized(self, wow_svc, prefix, expected_channel):
@@ -91,6 +96,21 @@ class TestWoWChannels:
         ch, text = wow_svc.parse_channel_and_text("пати hello")
         assert ch == "party"
         assert text == "hello"
+
+    def test_russian_general(self, wow_svc):
+        ch, text = wow_svc.parse_channel_and_text("общий wts boe")
+        assert ch == "general"
+        assert text == "wts boe"
+
+    def test_russian_general_hello(self, wow_svc):
+        ch, text = wow_svc.parse_channel_and_text("общий всем привет")
+        assert ch == "general"
+        assert text == "всем привет"
+
+    def test_russian_general_comma(self, wow_svc):
+        ch, text = wow_svc.parse_channel_and_text("общий, всем привет")
+        assert ch == "general"
+        assert text == "всем привет"
 
 
 class TestGenericPreset:
@@ -112,23 +132,25 @@ class TestWavAndMultipart:
         assert wav[:4] == b"RIFF"
         assert wav[8:12] == b"WAVE"
 
-    def test_preview_runs_without_interval(self, wow_svc):
-        import threading
-        import time
+    def test_unicode_pastes_via_clipboard(self, wow_svc, monkeypatch):
+        calls = []
 
-        wow_svc.server_ready = True
-        wow_svc.is_recording = True
-        wow_svc.sample_rate = 16000
-        wow_svc.audio_chunks = [b"\x00\x00" * 8000]
-        wow_svc._inference = lambda pcm, sr: "hello"
-        thread = threading.Thread(target=wow_svc._preview_loop, daemon=True)
-        thread.start()
-        deadline = time.monotonic() + 0.3
-        while time.monotonic() < deadline and wow_svc.preview_text != "hello":
-            time.sleep(0.01)
-        wow_svc.preview_stop.set()
-        thread.join(timeout=1)
-        assert wow_svc.preview_text == "hello"
+        class Result:
+            returncode = 0
+
+        monkeypatch.setattr(wow_svc, "_set_clipboard", lambda text: True)
+        monkeypatch.setattr(
+            "deckvoice.voice_service.subprocess.run",
+            lambda cmd, **_kwargs: calls.append(cmd) or Result(),
+        )
+        wow_svc.send_to_chat("Ок, как мне слышно")
+        assert any("47:1" in cmd for cmd in calls)
+
+    def test_stop_whisper_reaps_without_process(self, wow_svc):
+        wow_svc.server_process = None
+        wow_svc.stop_whisper_server()
+        assert wow_svc.server_ready is False
+        assert wow_svc.status == "off"
 
     def test_stop_keeps_final_preview(self, wow_svc):
         wow_svc.server_ready = True
