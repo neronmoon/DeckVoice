@@ -1,6 +1,5 @@
 import {
 	definePlugin,
-	findSP,
 	PanelSection,
 	PanelSectionRow,
 	ToggleField,
@@ -8,9 +7,10 @@ import {
 	DropdownOption,
 	Focusable,
 	gamepadDialogClasses,
+	Router,
 } from "decky-frontend-lib";
 
-import { callable, toaster } from "@decky/api";
+import { callable } from "@decky/api";
 
 import React, { VFC, useEffect, useState } from "react";
 import { FaMicrophone } from "react-icons/fa";
@@ -26,6 +26,7 @@ const setActivePresetRpc = callable<[game: string], RpcResponse>("set_active_pre
 const setWhisperModelRpc = callable<[model: string], RpcResponse>("set_whisper_model");
 const setWhisperLanguageRpc = callable<[language: string], RpcResponse>("set_whisper_language");
 const setButtonConfig = callable<[buttons: string[]], RpcResponse>("set_button_config");
+const setActiveAppRpc = callable<[app_id: string, name: string], RpcResponse>("set_active_app");
 
 const BUTTON_NAMES = ["L1", "R1", "L2", "R2", "L4", "R4", "L5", "R5", "A", "B", "X", "Y"];
 const BUTTON_ROWS = [
@@ -53,109 +54,28 @@ function friendlyStatus(status: RpcResponse | null): string {
 	return "Off";
 }
 
-function toastDocs(): Document[] {
-	const docs = new Set<Document>([document]);
-	try {
-		const sp = findSP()?.document;
-		if (sp) docs.add(sp);
-	} catch {}
-	return [...docs];
-}
-
-function isDeckVoiceToast(item: any): boolean {
-	const title = item?.data?.title ?? item?.title;
-	return item?.decky === true || title === "DeckVoice";
-}
-
-function reapToasts() {
-	const store = (window as any).NotificationStore;
-	if (store?.RemoveGroupFromTray) {
-		const buckets = [
-			store.m_rgTrayGroups,
-			store.m_rgNotificationGroups,
-			store.m_rgNotificationToasts,
-			store.m_rgToasts,
-			store.m_rgNotifications,
-		];
-		for (const bucket of buckets) {
-			if (!Array.isArray(bucket)) continue;
-			for (const group of [...bucket]) {
-				const notes = group?.notifications || [group];
-				if (notes.some(isDeckVoiceToast)) {
-					try {
-						store.RemoveGroupFromTray(group);
-					} catch (_e) {}
-				}
-			}
-		}
-	}
-	for (const doc of toastDocs()) {
-		const roots = doc.querySelectorAll(
-			"[class*='notificationtoasts'],[class*='ToastManager'],[class*='toastmanager']"
-		);
-		for (const root of Array.from(roots)) {
-			for (const child of Array.from(root.children)) {
-				if ((child.textContent || "").includes("DeckVoice")) child.remove();
-			}
-		}
-	}
-}
-
-class DeckVoiceLogic {
-	enabled = false;
-	prevRecordingStartCount = 0;
-	pollInFlight = false;
-	toastHandle: { dismiss: () => void } | null = null;
-
-	show(body: string) {
-		if (this.toastHandle) return;
-		this.toastHandle = toaster.toast({
-			title: "DeckVoice",
-			body,
-			duration: 2000,
-			expiration: 2000,
-			critical: false,
-			playSound: false,
-		});
-	}
-
-	hide() {
-		try {
-			this.toastHandle?.dismiss();
-		} catch (_e) {}
-		this.toastHandle = null;
-		reapToasts();
-	}
-
-	poll = async () => {
-		if (!this.enabled || this.pollInFlight) return;
-		this.pollInFlight = true;
-		try {
-			const status = await getStatus();
-			if (!status?.success) return;
-
-			if (status.recording_start_count > this.prevRecordingStartCount) {
-				this.prevRecordingStartCount = status.recording_start_count;
-				this.hide();
-				this.show("Listening…");
-			} else if (!status.recording) {
-				this.hide();
-			}
-		} catch (_e) {
-		} finally {
-			this.pollInFlight = false;
-		}
-	};
-}
-
-const logic = new DeckVoiceLogic();
-
 function nextCombo(current: string[], name: string): string[] {
 	const next = current.includes(name)
 		? current.filter((b) => b !== name)
 		: [...current, name];
 	if (next.length < 1 || next.length > 5) return current;
 	return BUTTON_NAMES.filter((b) => next.includes(b));
+}
+
+function readRunningApp(): { appId: string; appName: string } {
+	const app = Router.MainRunningApp;
+	if (!app?.appid) return { appId: "", appName: "" };
+	return {
+		appId: String(app.appid),
+		appName: String(app.display_name || ""),
+	};
+}
+
+async function syncActiveApp() {
+	const { appId, appName } = readRunningApp();
+	try {
+		await setActiveAppRpc(appId, appName);
+	} catch (_e) {}
 }
 
 const CHIP_FOCUS = [
@@ -238,13 +158,34 @@ const DeckVoicePanel: VFC = () => {
 	const [whisperLanguage, setWhisperLanguage] = useState("auto");
 	const [modelOptions, setModelOptions] = useState<DropdownOption[]>([]);
 	const [languageOptions, setLanguageOptions] = useState<DropdownOption[]>([]);
+	const [appId, setAppId] = useState("");
+	const [appName, setAppName] = useState("");
+
+	const applyConfig = (cfg: any) => {
+		if (!cfg) return;
+		setEnabled(!!cfg.enabled);
+		setButtons(cfg.buttons || ["L1", "R1"]);
+		setGame(cfg.game || "wow");
+		setWhisperModel(cfg.whisperModel || "base");
+		setWhisperLanguage(cfg.whisperLanguage || "auto");
+		setAppId(cfg.appId || "");
+		setAppName(cfg.appName || "");
+	};
 
 	const applyStatus = (status: RpcResponse) => {
 		setStatusLabel(friendlyStatus(status));
 		setPreview((status.preview_text || "").trim());
 		setFailed(!!status.enabled && (!!status.model_load_error || status.status === "error"));
-		setEnabled(!!status.enabled);
-		logic.enabled = !!status.enabled;
+		if (status.profileEnabled !== undefined) {
+			setEnabled(!!status.profileEnabled);
+		} else {
+			setEnabled(!!status.enabled);
+		}
+		const nextAppId = status.appId || "";
+		const nextAppName = status.appName || "";
+		if (status.appId !== undefined) setAppId(nextAppId);
+		if (status.appName !== undefined) setAppName(nextAppName);
+		return nextAppId;
 	};
 
 	const refresh = async () => {
@@ -254,14 +195,7 @@ const DeckVoicePanel: VFC = () => {
 			getPresets(),
 			getWhisperLanguages(),
 		]);
-		if (cfg?.success && cfg.config) {
-			setEnabled(!!cfg.config.enabled);
-			logic.enabled = !!cfg.config.enabled;
-			setButtons(cfg.config.buttons || ["L1", "R1"]);
-			setGame(cfg.config.game || "wow");
-			setWhisperModel(cfg.config.whisperModel || "base");
-			setWhisperLanguage(cfg.config.whisperLanguage || "auto");
-		}
+		if (cfg?.success && cfg.config) applyConfig(cfg.config);
 		if (status?.success) applyStatus(status);
 		if (presetResp?.success) setPresets(presetResp.presets || {});
 		if (langResp?.success) {
@@ -285,24 +219,30 @@ const DeckVoicePanel: VFC = () => {
 		const id = setInterval(async () => {
 			try {
 				const status = await getStatus();
-				if (status?.success) applyStatus(status);
+				if (!status?.success) return;
+				const nextAppId = applyStatus(status);
+				if (nextAppId !== appId) {
+					const cfg = await getButtonConfig();
+					if (cfg?.success && cfg.config) applyConfig(cfg.config);
+				}
 			} catch (_e) {}
 		}, 1000);
 		return () => clearInterval(id);
-	}, []);
+	}, [appId]);
+
+	const inGame = !!appId;
 
 	const onToggleEnabled = async (value: boolean) => {
+		if (!inGame) return;
 		setBusy(true);
 		setFailed(false);
 		setEnabled(value);
-		logic.enabled = value;
 		setStatusLabel(value ? "Starting…" : "Off");
 		const res = await setEnabledRpc(value);
 		if (!res?.success) {
 			setFailed(true);
 			setStatusLabel("Failed to start");
 			setEnabled(false);
-			logic.enabled = false;
 		}
 		await refresh();
 		setBusy(false);
@@ -332,11 +272,22 @@ const DeckVoicePanel: VFC = () => {
 		<>
 			<PanelSection title="DeckVoice">
 				<PanelSectionRow>
+					<div style={{ fontSize: "13px", opacity: 0.8, marginBottom: "6px" }}>
+						{inGame ? appName || `App ${appId}` : "No game"}
+					</div>
+				</PanelSectionRow>
+				<PanelSectionRow>
 					<ToggleField
 						label="Enable"
-						description={busy ? "Please wait…" : "GPU Whisper. Off frees VRAM."}
+						description={
+							busy
+								? "Please wait…"
+								: inGame
+									? "GPU Whisper. Off frees VRAM."
+									: "Launch a game to enable"
+						}
 						checked={enabled}
-						disabled={busy}
+						disabled={busy || !inGame}
 						onChange={onToggleEnabled}
 					/>
 				</PanelSectionRow>
@@ -379,7 +330,7 @@ const DeckVoicePanel: VFC = () => {
 			<PanelSection title="Profile">
 				<PanelSectionRow>
 					<DropdownItem
-						label="Game"
+						label="Chat"
 						rgOptions={presetOptions}
 						selectedOption={game}
 						disabled={busy}
@@ -433,22 +384,27 @@ const DeckVoicePanel: VFC = () => {
 };
 
 export default definePlugin(() => {
-	getStatus().then((status) => {
-		if (!status?.success) return;
-		logic.prevRecordingStartCount = status.recording_start_count || 0;
-		logic.enabled = !!status.enabled;
-	});
-	const interval = setInterval(() => {
-		logic.poll();
-	}, 50);
+	syncActiveApp();
+	const pollId = setInterval(syncActiveApp, 2000);
+	let unregister: (() => void) | undefined;
+	try {
+		const handle = (SteamClient as any).GameSessions?.RegisterForAppLifetimeNotifications?.(
+			() => {
+				syncActiveApp();
+			}
+		);
+		unregister = handle?.unregister;
+	} catch (_e) {}
 
 	return {
 		title: <div>DeckVoice</div>,
 		content: <DeckVoicePanel />,
 		icon: <FaMicrophone />,
 		onDismount() {
-			clearInterval(interval);
-			logic.hide();
+			clearInterval(pollId);
+			try {
+				unregister?.();
+			} catch (_e) {}
 		},
 	};
 });

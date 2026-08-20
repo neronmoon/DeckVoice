@@ -45,6 +45,33 @@ WHISPER_SERVER_HOST = "127.0.0.1"
 WHISPER_SERVER_PORT = 8178
 MIN_INFERENCE_BYTES = 8000
 YDOTOOL_SOCKET = "/tmp/deckvoice-ydotool.sock"
+VU_FILE = "/tmp/deckvoice_vu"
+VU_BARS = 8
+
+
+def vu_levels(pcm_int16: bytes, bars=VU_BARS) -> list:
+    n = len(pcm_int16) // 2
+    if n < bars:
+        return [0.0] * bars
+    samples = struct.unpack_from(f"<{n}h", pcm_int16)
+    step = n // bars
+    out = []
+    for i in range(bars):
+        sl = samples[i * step:(i + 1) * step]
+        acc = 0
+        for s in sl:
+            acc += s * s
+        rms = (acc / len(sl)) ** 0.5 / 32768.0
+        out.append(min(1.0, rms * 6.0))
+    return out
+
+
+def write_vu(levels) -> None:
+    try:
+        with open(VU_FILE, "w") as f:
+            f.write(" ".join(f"{v:.3f}" for v in levels))
+    except OSError:
+        pass
 
 
 def _wav_bytes(pcm_int16: bytes, sample_rate: int) -> bytes:
@@ -95,7 +122,7 @@ class VoiceService:
         self.model_size = model_size if model_size in WHISPER_MODELS else "base"
         self.language = language if language in WHISPER_LANGUAGES else "auto"
         self.ca_file = ca_file
-        self.default_channel = self.preset.get("default_channel", "say")
+        self.default_channel = self.preset.get("default_channel", "")
         self.channel_commands = self.preset.get("channels") or {"type": ""}
 
         self.server_process = None
@@ -104,6 +131,7 @@ class VoiceService:
         self.model_load_error = None
         self._server_log_lines = []
         self._server_log_thread = None
+        self._overlay_proc = None
 
         self.is_recording = False
         self.recording_stream = None
@@ -141,7 +169,7 @@ class VoiceService:
 
     def set_preset(self, preset):
         self.preset = preset or {}
-        self.default_channel = self.preset.get("default_channel", "say")
+        self.default_channel = self.preset.get("default_channel", "")
         self.channel_commands = self.preset.get("channels") or {"type": ""}
 
     def _ggml_model_path(self):
@@ -233,6 +261,7 @@ class VoiceService:
                     self.model_loading = False
                     self.status = "listening"
                     logger.info("whisper-server ready (gpu)")
+                    self.start_overlay()
                     return True
                 time.sleep(0.2)
             raise TimeoutError(
@@ -336,7 +365,56 @@ class VoiceService:
             except subprocess.TimeoutExpired:
                 pass
         self._reap_whisper_servers()
+        self.stop_overlay()
         self.status = "off"
+
+    def start_overlay(self):
+        if self._overlay_proc and self._overlay_proc.poll() is None:
+            return
+        binary = self.plugin_dir / "bin" / "deckvoice-overlay"
+        if not binary.is_file():
+            logger.warning("overlay binary missing: %s", binary)
+            return
+        env = self._server_env()
+        display = env.get("DISPLAY") or ":0"
+        env["DISPLAY"] = display
+        env["HOME"] = "/home/deck"
+        cmd = [str(binary)]
+        if os.geteuid() == 0:
+            cmd = [
+                "runuser", "-u", "deck", "--",
+                "env",
+                f"DISPLAY={display}",
+                f"LD_LIBRARY_PATH={env.get('LD_LIBRARY_PATH', '')}",
+                "HOME=/home/deck",
+                str(binary),
+            ]
+        try:
+            log = open("/tmp/deckvoice-overlay.log", "w")
+            self._overlay_proc = subprocess.Popen(
+                cmd,
+                env=env,
+                start_new_session=True,
+                stdout=log,
+                stderr=log,
+            )
+        except OSError as e:
+            logger.warning("overlay start failed: %s", e)
+            self._overlay_proc = None
+            return
+        logger.info("overlay pid=%s", self._overlay_proc.pid)
+
+    def stop_overlay(self):
+        proc = self._overlay_proc
+        self._overlay_proc = None
+        if proc and proc.poll() is None:
+            try:
+                os.killpg(proc.pid, 9)
+            except OSError:
+                try:
+                    proc.kill()
+                except OSError:
+                    pass
 
     def _inference(self, pcm_int16: bytes, sample_rate: int) -> str:
         if not self.server_ready or len(pcm_int16) < MIN_INFERENCE_BYTES:
@@ -364,9 +442,12 @@ class VoiceService:
         return text.strip()
 
     def audio_callback(self, indata, frames, time_info, status):
-        if self.is_recording:
-            with self.audio_lock:
-                self.audio_chunks.append(bytes(indata))
+        if not self.is_recording:
+            return
+        raw = bytes(indata)
+        with self.audio_lock:
+            self.audio_chunks.append(raw)
+        write_vu(vu_levels(raw))
 
     def _drain_pcm(self) -> bytes:
         with self.audio_lock:
@@ -422,6 +503,7 @@ class VoiceService:
                 self.recording_stream = None
 
             pcm = self._drain_pcm()
+            write_vu([0.0] * VU_BARS)
             self.status = "transcribing"
             if not pcm:
                 self.preview_text = ""

@@ -3,7 +3,7 @@
     "name": "World of Warcraft",
     "chat_open_key": "enter",
     "chat_send_key": "enter",
-    "default_channel": "say",
+    "default_channel": "",
     "channels": {
       "say": "/s ",
       "party": "/p ",

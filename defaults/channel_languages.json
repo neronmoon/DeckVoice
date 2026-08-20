@@ -389,5 +389,5 @@
     "en", "fr", "de", "es", "pt", "it", "nl", "pl", "ru", "tr",
     "zh", "ja", "ko", "hi", "ar"
   ],
-  "default_channel": "say"
+  "default_channel": ""
 }

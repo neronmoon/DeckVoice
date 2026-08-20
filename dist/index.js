@@ -32,7 +32,7 @@
     api.addEventListener;
     api.removeEventListener;
     api.routerHook;
-    const toaster = api.toaster;
+    api.toaster;
     api.openFilePicker;
     api.executeInTab;
     api.injectCssIntoTab;
@@ -126,6 +126,7 @@
     const setWhisperModelRpc = callable("set_whisper_model");
     const setWhisperLanguageRpc = callable("set_whisper_language");
     const setButtonConfig = callable("set_button_config");
+    const setActiveAppRpc = callable("set_active_app");
     const BUTTON_NAMES = ["L1", "R1", "L2", "R2", "L4", "R4", "L5", "R5", "A", "B", "X", "Y"];
     const BUTTON_ROWS = [
         ["L1", "R1", "L2", "R2"],
@@ -157,106 +158,6 @@
             return "Starting…";
         return "Off";
     }
-    function toastDocs() {
-        const docs = new Set([document]);
-        try {
-            const sp = deckyFrontendLib.findSP()?.document;
-            if (sp)
-                docs.add(sp);
-        }
-        catch { }
-        return [...docs];
-    }
-    function isDeckVoiceToast(item) {
-        const title = item?.data?.title ?? item?.title;
-        return item?.decky === true || title === "DeckVoice";
-    }
-    function reapToasts() {
-        const store = window.NotificationStore;
-        if (store?.RemoveGroupFromTray) {
-            const buckets = [
-                store.m_rgTrayGroups,
-                store.m_rgNotificationGroups,
-                store.m_rgNotificationToasts,
-                store.m_rgToasts,
-                store.m_rgNotifications,
-            ];
-            for (const bucket of buckets) {
-                if (!Array.isArray(bucket))
-                    continue;
-                for (const group of [...bucket]) {
-                    const notes = group?.notifications || [group];
-                    if (notes.some(isDeckVoiceToast)) {
-                        try {
-                            store.RemoveGroupFromTray(group);
-                        }
-                        catch (_e) { }
-                    }
-                }
-            }
-        }
-        for (const doc of toastDocs()) {
-            const roots = doc.querySelectorAll("[class*='notificationtoasts'],[class*='ToastManager'],[class*='toastmanager']");
-            for (const root of Array.from(roots)) {
-                for (const child of Array.from(root.children)) {
-                    if ((child.textContent || "").includes("DeckVoice"))
-                        child.remove();
-                }
-            }
-        }
-    }
-    class DeckVoiceLogic {
-        constructor() {
-            this.enabled = false;
-            this.prevRecordingStartCount = 0;
-            this.pollInFlight = false;
-            this.toastHandle = null;
-            this.poll = async () => {
-                if (!this.enabled || this.pollInFlight)
-                    return;
-                this.pollInFlight = true;
-                try {
-                    const status = await getStatus();
-                    if (!status?.success)
-                        return;
-                    if (status.recording_start_count > this.prevRecordingStartCount) {
-                        this.prevRecordingStartCount = status.recording_start_count;
-                        this.hide();
-                        this.show("Listening…");
-                    }
-                    else if (!status.recording) {
-                        this.hide();
-                    }
-                }
-                catch (_e) {
-                }
-                finally {
-                    this.pollInFlight = false;
-                }
-            };
-        }
-        show(body) {
-            if (this.toastHandle)
-                return;
-            this.toastHandle = toaster.toast({
-                title: "DeckVoice",
-                body,
-                duration: 2000,
-                expiration: 2000,
-                critical: false,
-                playSound: false,
-            });
-        }
-        hide() {
-            try {
-                this.toastHandle?.dismiss();
-            }
-            catch (_e) { }
-            this.toastHandle = null;
-            reapToasts();
-        }
-    }
-    const logic = new DeckVoiceLogic();
     function nextCombo(current, name) {
         const next = current.includes(name)
             ? current.filter((b) => b !== name)
@@ -264,6 +165,22 @@
         if (next.length < 1 || next.length > 5)
             return current;
         return BUTTON_NAMES.filter((b) => next.includes(b));
+    }
+    function readRunningApp() {
+        const app = deckyFrontendLib.Router.MainRunningApp;
+        if (!app?.appid)
+            return { appId: "", appName: "" };
+        return {
+            appId: String(app.appid),
+            appName: String(app.display_name || ""),
+        };
+    }
+    async function syncActiveApp() {
+        const { appId, appName } = readRunningApp();
+        try {
+            await setActiveAppRpc(appId, appName);
+        }
+        catch (_e) { }
     }
     const CHIP_FOCUS = [
         "dv-chip-focus",
@@ -311,12 +228,36 @@
         const [whisperLanguage, setWhisperLanguage] = React.useState("auto");
         const [modelOptions, setModelOptions] = React.useState([]);
         const [languageOptions, setLanguageOptions] = React.useState([]);
+        const [appId, setAppId] = React.useState("");
+        const [appName, setAppName] = React.useState("");
+        const applyConfig = (cfg) => {
+            if (!cfg)
+                return;
+            setEnabled(!!cfg.enabled);
+            setButtons(cfg.buttons || ["L1", "R1"]);
+            setGame(cfg.game || "wow");
+            setWhisperModel(cfg.whisperModel || "base");
+            setWhisperLanguage(cfg.whisperLanguage || "auto");
+            setAppId(cfg.appId || "");
+            setAppName(cfg.appName || "");
+        };
         const applyStatus = (status) => {
             setStatusLabel(friendlyStatus(status));
             setPreview((status.preview_text || "").trim());
             setFailed(!!status.enabled && (!!status.model_load_error || status.status === "error"));
-            setEnabled(!!status.enabled);
-            logic.enabled = !!status.enabled;
+            if (status.profileEnabled !== undefined) {
+                setEnabled(!!status.profileEnabled);
+            }
+            else {
+                setEnabled(!!status.enabled);
+            }
+            const nextAppId = status.appId || "";
+            const nextAppName = status.appName || "";
+            if (status.appId !== undefined)
+                setAppId(nextAppId);
+            if (status.appName !== undefined)
+                setAppName(nextAppName);
+            return nextAppId;
         };
         const refresh = async () => {
             const [cfg, status, presetResp, langResp] = await Promise.all([
@@ -325,14 +266,8 @@
                 getPresets(),
                 getWhisperLanguages(),
             ]);
-            if (cfg?.success && cfg.config) {
-                setEnabled(!!cfg.config.enabled);
-                logic.enabled = !!cfg.config.enabled;
-                setButtons(cfg.config.buttons || ["L1", "R1"]);
-                setGame(cfg.config.game || "wow");
-                setWhisperModel(cfg.config.whisperModel || "base");
-                setWhisperLanguage(cfg.config.whisperLanguage || "auto");
-            }
+            if (cfg?.success && cfg.config)
+                applyConfig(cfg.config);
             if (status?.success)
                 applyStatus(status);
             if (presetResp?.success)
@@ -353,25 +288,32 @@
             const id = setInterval(async () => {
                 try {
                     const status = await getStatus();
-                    if (status?.success)
-                        applyStatus(status);
+                    if (!status?.success)
+                        return;
+                    const nextAppId = applyStatus(status);
+                    if (nextAppId !== appId) {
+                        const cfg = await getButtonConfig();
+                        if (cfg?.success && cfg.config)
+                            applyConfig(cfg.config);
+                    }
                 }
                 catch (_e) { }
             }, 1000);
             return () => clearInterval(id);
-        }, []);
+        }, [appId]);
+        const inGame = !!appId;
         const onToggleEnabled = async (value) => {
+            if (!inGame)
+                return;
             setBusy(true);
             setFailed(false);
             setEnabled(value);
-            logic.enabled = value;
             setStatusLabel(value ? "Starting…" : "Off");
             const res = await setEnabledRpc(value);
             if (!res?.success) {
                 setFailed(true);
                 setStatusLabel("Failed to start");
                 setEnabled(false);
-                logic.enabled = false;
             }
             await refresh();
             setBusy(false);
@@ -396,7 +338,13 @@
         return (React__default["default"].createElement(React__default["default"].Fragment, null,
             React__default["default"].createElement(deckyFrontendLib.PanelSection, { title: "DeckVoice" },
                 React__default["default"].createElement(deckyFrontendLib.PanelSectionRow, null,
-                    React__default["default"].createElement(deckyFrontendLib.ToggleField, { label: "Enable", description: busy ? "Please wait…" : "GPU Whisper. Off frees VRAM.", checked: enabled, disabled: busy, onChange: onToggleEnabled })),
+                    React__default["default"].createElement("div", { style: { fontSize: "13px", opacity: 0.8, marginBottom: "6px" } }, inGame ? appName || `App ${appId}` : "No game")),
+                React__default["default"].createElement(deckyFrontendLib.PanelSectionRow, null,
+                    React__default["default"].createElement(deckyFrontendLib.ToggleField, { label: "Enable", description: busy
+                            ? "Please wait…"
+                            : inGame
+                                ? "GPU Whisper. Off frees VRAM."
+                                : "Launch a game to enable", checked: enabled, disabled: busy || !inGame, onChange: onToggleEnabled })),
                 React__default["default"].createElement(deckyFrontendLib.PanelSectionRow, null,
                     React__default["default"].createElement(StatusLine, { label: statusLabel, preview: preview, failed: failed }))),
             React__default["default"].createElement(deckyFrontendLib.PanelSection, { title: "Recognition" },
@@ -416,7 +364,7 @@
                         } }))),
             React__default["default"].createElement(deckyFrontendLib.PanelSection, { title: "Profile" },
                 React__default["default"].createElement(deckyFrontendLib.PanelSectionRow, null,
-                    React__default["default"].createElement(deckyFrontendLib.DropdownItem, { label: "Game", rgOptions: presetOptions, selectedOption: game, disabled: busy, onChange: async (option) => {
+                    React__default["default"].createElement(deckyFrontendLib.DropdownItem, { label: "Chat", rgOptions: presetOptions, selectedOption: game, disabled: busy, onChange: async (option) => {
                             const value = String(option.data);
                             setGame(value);
                             await setActivePresetRpc(value);
@@ -439,22 +387,26 @@
                         } })))))))))));
     };
     var index = deckyFrontendLib.definePlugin(() => {
-        getStatus().then((status) => {
-            if (!status?.success)
-                return;
-            logic.prevRecordingStartCount = status.recording_start_count || 0;
-            logic.enabled = !!status.enabled;
-        });
-        const interval = setInterval(() => {
-            logic.poll();
-        }, 50);
+        syncActiveApp();
+        const pollId = setInterval(syncActiveApp, 2000);
+        let unregister;
+        try {
+            const handle = SteamClient.GameSessions?.RegisterForAppLifetimeNotifications?.(() => {
+                syncActiveApp();
+            });
+            unregister = handle?.unregister;
+        }
+        catch (_e) { }
         return {
             title: React__default["default"].createElement("div", null, "DeckVoice"),
             content: React__default["default"].createElement(DeckVoicePanel, null),
             icon: React__default["default"].createElement(FaMicrophone, null),
             onDismount() {
-                clearInterval(interval);
-                logic.hide();
+                clearInterval(pollId);
+                try {
+                    unregister?.();
+                }
+                catch (_e) { }
             },
         };
     });

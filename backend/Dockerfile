@@ -28,6 +28,17 @@ RUN cmake -S /whisper.cpp -B /build \
     && cp -a /build/bin/lib*.so* /whisper-out/lib/ \
     && cp /whisper.cpp/LICENSE /whisper-out/LICENSE
 
+FROM ubuntu:24.04 AS overlay-build
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends gcc libc6-dev libglfw3-dev libgl1-mesa-dev libx11-dev libxrandr-dev \
+    && rm -rf /var/lib/apt/lists/*
+COPY overlay.c stb_image.h listening.png /
+RUN mkdir -p /overlay-out/lib \
+    && cc -O2 -o /overlay-out/deckvoice-overlay /overlay.c -lglfw -lGL -lX11 -lm \
+    && cp /listening.png /overlay-out/listening.png \
+    && cp -a /usr/lib/x86_64-linux-gnu/libglfw.so.3* /overlay-out/lib/
+
 FROM ghcr.io/steamdeckhomebrew/holo-base:latest
 
 ARG YDOTOOL_COMMIT=57ba7d0af525e82da2de0e275d169477f293b197
@@ -78,6 +89,7 @@ RUN git init /ydotool-src \
         /ydotool-src/Client/tool_key.c
 
 COPY --from=whisper-build /whisper-out/ /whisper-build/
+COPY --from=overlay-build /overlay-out/ /overlay-build/
 COPY entrypoint.sh /backend/entrypoint.sh
 
 ENTRYPOINT ["/backend/entrypoint.sh"]

@@ -18,6 +18,12 @@ try:
 except ImportError:
     import decky_plugin as decky
 
+from deckvoice.game_profiles import (
+    migrate_store,
+    normalize_profile,
+    resolve_profile,
+    update_current_profile,
+)
 from deckvoice.voice_service import (
     WHISPER_LANGUAGE_NAMES,
     WHISPER_LANGUAGES,
@@ -55,14 +61,6 @@ try:
 except Exception as e:
     logger.error("Failed to load game presets: %s", e)
 
-DEFAULT_CONFIG = {
-    "buttons": ["L1", "R1"],
-    "enabled": False,
-    "game": "wow",
-    "whisperModel": "base",
-    "whisperLanguage": "auto",
-}
-
 
 class Plugin:
     voice_service = None
@@ -74,35 +72,60 @@ class Plugin:
     controller_enabled = False
     recording_start_count = 0
     active_preset = "wow"
+    current_app_id = ""
+    current_app_name = ""
+    applied_buttons = None
 
     @staticmethod
-    def _load_config():
-        config = dict(DEFAULT_CONFIG)
+    def _load_store():
+        raw = {}
         if os.path.exists(BUTTON_CONFIG_FILE):
             with open(BUTTON_CONFIG_FILE, "r") as f:
-                saved = json.load(f)
-            config.update(saved)
-        if config.get("whisperModel") not in WHISPER_MODELS:
-            config["whisperModel"] = "base"
-        if config.get("whisperLanguage") not in WHISPER_LANGUAGES:
-            config["whisperLanguage"] = "auto"
-        if config.get("game") not in _game_presets:
-            config["game"] = "wow"
-        if not isinstance(config.get("buttons"), list) or not config["buttons"]:
-            config["buttons"] = ["L1", "R1"]
-        return config
+                raw = json.load(f)
+        return migrate_store(raw, _game_presets, WHISPER_MODELS, WHISPER_LANGUAGES)
 
     @staticmethod
-    def _save_config(config):
+    def _save_store(store):
         with open(BUTTON_CONFIG_FILE, "w") as f:
-            json.dump(config, f)
+            json.dump(store, f)
 
     @staticmethod
-    def _update_config(**kwargs):
-        config = Plugin._load_config()
-        config.update(kwargs)
-        Plugin._save_config(config)
-        return config
+    def _resolved_profile(store=None):
+        store = store or Plugin._load_store()
+        profile = resolve_profile(store, Plugin.current_app_id)
+        return normalize_profile(profile, _game_presets, WHISPER_MODELS, WHISPER_LANGUAGES)
+
+    @staticmethod
+    def _update_current(**kwargs):
+        store = Plugin._load_store()
+        profile = update_current_profile(
+            store,
+            Plugin.current_app_id,
+            name=Plugin.current_app_name or None,
+            **kwargs,
+        )
+        profile = normalize_profile(profile, _game_presets, WHISPER_MODELS, WHISPER_LANGUAGES)
+        if Plugin.current_app_id:
+            store["profiles"][str(Plugin.current_app_id)] = profile
+            if Plugin.current_app_name:
+                store["profiles"][str(Plugin.current_app_id)]["name"] = Plugin.current_app_name
+        else:
+            profile["enabled"] = False
+            store["defaults"] = profile
+        if "buttons" in kwargs:
+            store["buttons"] = list(profile["buttons"])
+        Plugin._save_store(store)
+        return store, profile
+
+    @staticmethod
+    def _public_config(store=None):
+        store = store or Plugin._load_store()
+        profile = Plugin._resolved_profile(store)
+        return {
+            **profile,
+            "appId": Plugin.current_app_id or "",
+            "appName": Plugin.current_app_name or "",
+        }
 
     @staticmethod
     def start_ydotoold():
@@ -245,24 +268,34 @@ class Plugin:
         logger.info("Button state polling stopped")
 
     @staticmethod
-    def _start_runtime():
-        config = Plugin._load_config()
-        Plugin.active_preset = config["game"]
-        preset = _game_presets.get(Plugin.active_preset, _game_presets.get("wow", {}))
+    def _sync_listener_buttons(buttons):
+        store = Plugin._load_store()
+        store["buttons"] = list(buttons)
+        Plugin._save_store(store)
+        Plugin.applied_buttons = list(buttons)
 
+    @staticmethod
+    def _ensure_voice_service(profile):
+        Plugin.active_preset = profile["game"]
+        preset = _game_presets.get(Plugin.active_preset, _game_presets.get("wow", {}))
         if Plugin.voice_service is None:
             Plugin.voice_service = VoiceService(
                 plugin_dir=plugin_path,
                 models_dir=MODELS_DIR,
                 preset=preset,
-                model_size=config["whisperModel"],
-                language=config["whisperLanguage"],
+                model_size=profile["whisperModel"],
+                language=profile["whisperLanguage"],
                 ca_file=CA_FILE,
             )
-        else:
-            Plugin.voice_service.model_size = config["whisperModel"]
-            Plugin.voice_service.language = config["whisperLanguage"]
-            Plugin.voice_service.set_preset(preset)
+            return
+        Plugin.voice_service.model_size = profile["whisperModel"]
+        Plugin.voice_service.language = profile["whisperLanguage"]
+        Plugin.voice_service.set_preset(preset)
+
+    @staticmethod
+    def _start_runtime(profile):
+        Plugin._ensure_voice_service(profile)
+        Plugin._sync_listener_buttons(profile["buttons"])
 
         if not Plugin.start_ydotoold():
             logger.error("Failed to start ydotoold")
@@ -288,6 +321,7 @@ class Plugin:
     def _stop_runtime():
         Plugin.controller_enabled = False
         Plugin.poll_running = False
+        Plugin.applied_buttons = None
         if Plugin.voice_service:
             if Plugin.voice_service.is_recording:
                 Plugin.voice_service.stop_recording(send=False)
@@ -295,24 +329,51 @@ class Plugin:
         Plugin.stop_controller_listener()
         Plugin.stop_ydotoold()
 
+    @staticmethod
+    def _apply_profile(profile):
+        profile = normalize_profile(profile, _game_presets, WHISPER_MODELS, WHISPER_LANGUAGES)
+        if not profile.get("enabled") or not Plugin.current_app_id:
+            Plugin._stop_runtime()
+            Plugin.active_preset = profile["game"]
+            if Plugin.voice_service:
+                Plugin._ensure_voice_service(profile)
+            return True
+
+        vs = Plugin.voice_service
+        same_model = (
+            Plugin.controller_enabled
+            and vs is not None
+            and vs.model_size == profile["whisperModel"]
+            and vs.language == profile["whisperLanguage"]
+            and vs.server_ready
+        )
+        if same_model:
+            Plugin.active_preset = profile["game"]
+            vs.set_preset(_game_presets.get(profile["game"], _game_presets.get("wow", {})))
+            if Plugin.applied_buttons != profile["buttons"]:
+                Plugin._sync_listener_buttons(profile["buttons"])
+                Plugin.start_controller_listener()
+            return True
+
+        Plugin._stop_runtime()
+        return Plugin._start_runtime(profile)
+
     async def _main(self):
         logger.info("Initializing DeckVoice")
         try:
-            config = Plugin._load_config()
-            Plugin.active_preset = config["game"]
-            preset = _game_presets.get(Plugin.active_preset, _game_presets.get("wow", {}))
+            store = Plugin._load_store()
+            Plugin._save_store(store)
+            profile = Plugin._resolved_profile(store)
+            Plugin.active_preset = profile["game"]
             Plugin.voice_service = VoiceService(
                 plugin_dir=plugin_path,
                 models_dir=MODELS_DIR,
-                preset=preset,
-                model_size=config["whisperModel"],
-                language=config["whisperLanguage"],
+                preset=_game_presets.get(Plugin.active_preset, _game_presets.get("wow", {})),
+                model_size=profile["whisperModel"],
+                language=profile["whisperLanguage"],
                 ca_file=CA_FILE,
             )
             Plugin.voice_service.stop_whisper_server()
-            if config.get("enabled"):
-                logger.info("Restoring enabled state")
-                Plugin._start_runtime()
         except Exception:
             logger.error(f"Failed to initialize: {traceback.format_exc()}")
 
@@ -323,24 +384,47 @@ class Plugin:
     async def _uninstall(self):
         Plugin._stop_runtime()
 
+    async def set_active_app(self, app_id: str = "", name: str = ""):
+        app_id = str(app_id or "").strip()
+        name = str(name or "").strip()
+        if app_id == Plugin.current_app_id and name == Plugin.current_app_name:
+            return {"success": True, "config": Plugin._public_config()}
+        Plugin.current_app_id = app_id
+        Plugin.current_app_name = name
+        store = Plugin._load_store()
+        if app_id and name and str(app_id) in store.get("profiles", {}):
+            store["profiles"][str(app_id)]["name"] = name
+            Plugin._save_store(store)
+        profile = Plugin._resolved_profile(store)
+        ok = Plugin._apply_profile(profile)
+        return {
+            "success": ok,
+            "error": None if ok else (Plugin.voice_service.model_load_error if Plugin.voice_service else "start failed"),
+            "config": Plugin._public_config(),
+        }
+
     async def set_enabled(self, enabled: bool):
-        Plugin._update_config(enabled=bool(enabled))
-        if enabled:
-            ok = Plugin._start_runtime()
-            return {"success": ok, "error": None if ok else (Plugin.voice_service.model_load_error if Plugin.voice_service else "start failed")}
-        Plugin._stop_runtime()
-        return {"success": True}
+        if not Plugin.current_app_id:
+            return {"success": False, "error": "launch a game to enable"}
+        store, profile = Plugin._update_current(enabled=bool(enabled))
+        ok = Plugin._apply_profile(profile)
+        return {
+            "success": ok,
+            "error": None if ok else (Plugin.voice_service.model_load_error if Plugin.voice_service else "start failed"),
+            "config": Plugin._public_config(store),
+        }
 
     async def get_button_config(self):
-        return {"success": True, "config": Plugin._load_config()}
+        return {"success": True, "config": Plugin._public_config()}
 
     async def set_button_config(self, buttons):
         if not isinstance(buttons, list) or not (1 <= len(buttons) <= 5):
             return {"success": False, "error": "buttons must be a list of 1-5 names"}
-        Plugin._update_config(buttons=buttons)
+        store, profile = Plugin._update_current(buttons=buttons)
         if Plugin.controller_enabled:
+            Plugin._sync_listener_buttons(profile["buttons"])
             Plugin.start_controller_listener()
-        return {"success": True}
+        return {"success": True, "config": Plugin._public_config(store)}
 
     async def get_presets(self):
         return {"success": True, "presets": _game_presets}
@@ -356,35 +440,37 @@ class Plugin:
     async def set_active_preset(self, game: str):
         if game not in _game_presets:
             return {"success": False, "error": f"unknown preset: {game}"}
-        Plugin._update_config(game=game)
+        store, profile = Plugin._update_current(game=game)
         Plugin.active_preset = game
-        if Plugin.voice_service:
+        if Plugin.controller_enabled and Plugin.voice_service:
             Plugin.voice_service.set_preset(_game_presets[game])
-            if Plugin.controller_enabled:
-                Plugin.voice_service.start_whisper_server()
-        return {"success": True}
+        return {"success": True, "config": Plugin._public_config(store)}
 
     async def set_whisper_model(self, model: str):
         if model not in WHISPER_MODELS:
             return {"success": False, "error": f"unknown model: {model}"}
-        Plugin._update_config(whisperModel=model)
-        if Plugin.voice_service:
-            Plugin.voice_service.model_size = model
-            if Plugin.controller_enabled:
-                ok = Plugin.voice_service.start_whisper_server()
-                return {"success": ok, "error": Plugin.voice_service.model_load_error}
-        return {"success": True}
+        store, profile = Plugin._update_current(whisperModel=model)
+        if Plugin.controller_enabled:
+            ok = Plugin._apply_profile(profile)
+            return {
+                "success": ok,
+                "error": Plugin.voice_service.model_load_error if Plugin.voice_service else None,
+                "config": Plugin._public_config(store),
+            }
+        return {"success": True, "config": Plugin._public_config(store)}
 
     async def set_whisper_language(self, language: str):
         if language not in WHISPER_LANGUAGES:
             return {"success": False, "error": f"unknown language: {language}"}
-        Plugin._update_config(whisperLanguage=language)
-        if Plugin.voice_service:
-            Plugin.voice_service.language = language
-            if Plugin.controller_enabled:
-                ok = Plugin.voice_service.start_whisper_server()
-                return {"success": ok, "error": Plugin.voice_service.model_load_error}
-        return {"success": True}
+        store, profile = Plugin._update_current(whisperLanguage=language)
+        if Plugin.controller_enabled:
+            ok = Plugin._apply_profile(profile)
+            return {
+                "success": ok,
+                "error": Plugin.voice_service.model_load_error if Plugin.voice_service else None,
+                "config": Plugin._public_config(store),
+            }
+        return {"success": True, "config": Plugin._public_config(store)}
 
     async def get_status(self):
         vs = Plugin.voice_service
@@ -395,6 +481,7 @@ class Plugin:
                     button_state = f.read().strip() or "None"
             except OSError:
                 pass
+        profile = Plugin._resolved_profile()
         return {
             "success": True,
             "enabled": Plugin.controller_enabled,
@@ -409,4 +496,7 @@ class Plugin:
             "button_state": button_state,
             "game": Plugin.active_preset,
             "ydotoold_ready": Plugin.ydotoold_ready,
+            "appId": Plugin.current_app_id or "",
+            "appName": Plugin.current_app_name or "",
+            "profileEnabled": bool(profile.get("enabled")),
         }

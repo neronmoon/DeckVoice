@@ -26,7 +26,7 @@ jobs:
         id: backend
         with:
           path: bin
-          key: bin-${{ hashFiles('backend/Dockerfile', 'backend/entrypoint.sh', 'backend/requirements.txt') }}
+          key: bin-${{ hashFiles('backend/Dockerfile', 'backend/entrypoint.sh', 'backend/requirements.txt', 'backend/overlay.c', 'backend/listening.png', 'backend/stb_image.h') }}
 
       - name: Build backend
         if: steps.backend.outputs.cache-hit != 'true'
@@ -64,6 +64,8 @@ jobs:
           test -n "$zip"
           unzip -t "$zip"
           unzip -l "$zip" | grep -q 'bin/whisper-server'
+          unzip -l "$zip" | grep -q 'bin/deckvoice-overlay'
+          unzip -l "$zip" | grep -q 'bin/listening.png'
           unzip -l "$zip" | grep -q 'bin/ydotoold'
           unzip -l "$zip" | grep -q 'bin/lib/libggml'
           unzip -l "$zip" | grep -q 'cpython-311'
