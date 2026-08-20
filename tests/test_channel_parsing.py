@@ -112,7 +112,20 @@ class TestWavAndMultipart:
         assert wav[:4] == b"RIFF"
         assert wav[8:12] == b"WAVE"
 
-    def test_preview_interval_constant(self):
-        from deckvoice.voice_service import PREVIEW_INTERVAL_S
+    def test_preview_runs_without_interval(self, wow_svc):
+        import threading
+        import time
 
-        assert PREVIEW_INTERVAL_S == 0.8
+        wow_svc.server_ready = True
+        wow_svc.is_recording = True
+        wow_svc.sample_rate = 16000
+        wow_svc.audio_chunks = [b"\x00\x00" * 8000]
+        wow_svc._inference = lambda pcm, sr: "hello"
+        thread = threading.Thread(target=wow_svc._preview_loop, daemon=True)
+        thread.start()
+        deadline = time.monotonic() + 0.3
+        while time.monotonic() < deadline and wow_svc.preview_text != "hello":
+            time.sleep(0.01)
+        wow_svc.preview_stop.set()
+        thread.join(timeout=1)
+        assert wow_svc.preview_text == "hello"

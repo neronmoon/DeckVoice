@@ -159,71 +159,13 @@
         constructor() {
             this.enabled = false;
             this.prevRecordingStartCount = 0;
-            this.lastToastId = -1;
+            this.toast = null;
             this.lastPreview = "";
-            this.notify = async (title, body, duration = 4000) => {
-                const id = window.NotificationStore
-                    ? window.NotificationStore.m_nNextTestNotificationID++
-                    : 0;
-                const toastData = {
-                    nNotificationID: id,
-                    bNewIndicator: false,
-                    rtCreated: Date.now(),
-                    eType: 43,
-                    eSource: 1,
-                    nToastDurationMS: duration,
-                    data: { title, body, duration, critical: false },
-                    decky: true,
-                };
-                const info = {
-                    showToast: true,
-                    sound: 6,
-                    playSound: false,
-                    eFeature: 0,
-                    toastDurationMS: duration,
-                    bCritical: false,
-                    fnTray: (_t, tray) => {
-                        tray.unshift({ eType: 31, notifications: [toastData] });
-                    },
-                };
-                try {
-                    window.NotificationStore.ProcessNotification(info, toastData, 0);
-                }
-                catch (_e) {
-                    toaster.toast({ title, body, duration, critical: false });
-                }
-                return id;
-            };
-            this.dismissNotification = (id) => {
-                try {
-                    const toastData = {
-                        nNotificationID: id,
-                        bNewIndicator: false,
-                        rtCreated: Date.now(),
-                        eType: 43,
-                        eSource: 1,
-                        nToastDurationMS: 1,
-                        data: { title: "", body: "", duration: 1, critical: false },
-                        decky: true,
-                    };
-                    const info = {
-                        showToast: true,
-                        sound: 6,
-                        playSound: false,
-                        eFeature: 0,
-                        toastDurationMS: 1,
-                        bCritical: false,
-                        fnTray: (_t, tray) => {
-                            tray.unshift({ eType: 31, notifications: [toastData] });
-                        },
-                    };
-                    window.NotificationStore.ProcessNotification(info, toastData, 0);
-                }
-                catch (_e) { }
-            };
+            this.pollInFlight = false;
             this.poll = async () => {
-                if (!this.enabled)
+                if (!this.enabled || this.pollInFlight)
                     return;
+                this.pollInFlight = true;
                 try {
                     const status = await getStatus();
                     if (!status?.success)
@@ -231,27 +173,46 @@
                     if (status.recording_start_count > this.prevRecordingStartCount) {
                         this.prevRecordingStartCount = status.recording_start_count;
                         this.lastPreview = "";
-                        if (this.lastToastId >= 0)
-                            this.dismissNotification(this.lastToastId);
-                        this.lastToastId = await this.notify("DeckVoice", "Listening…", 60000);
+                        this.show("Listening…");
                     }
                     if (status.recording) {
                         const preview = (status.preview_text || "").trim();
                         if (preview && preview !== this.lastPreview) {
                             this.lastPreview = preview;
-                            if (this.lastToastId >= 0)
-                                this.dismissNotification(this.lastToastId);
-                            this.lastToastId = await this.notify("DeckVoice", preview, 60000);
+                            this.show(preview);
                         }
                     }
-                    else if (this.lastToastId >= 0 && !status.recording) {
-                        this.dismissNotification(this.lastToastId);
-                        this.lastToastId = -1;
+                    else if (this.toast) {
+                        this.hide();
                         this.lastPreview = "";
                     }
                 }
-                catch (_e) { }
+                catch (_e) {
+                }
+                finally {
+                    this.pollInFlight = false;
+                }
             };
+        }
+        show(body) {
+            this.hide();
+            try {
+                this.toast = toaster.toast({
+                    title: "DeckVoice",
+                    body,
+                    duration: 60000,
+                    critical: false,
+                    playSound: false,
+                });
+            }
+            catch (_e) { }
+        }
+        hide() {
+            try {
+                this.toast?.dismiss();
+            }
+            catch (_e) { }
+            this.toast = null;
         }
     }
     const logic = new DeckVoiceLogic();
@@ -263,7 +224,14 @@
             return current;
         return BUTTON_NAMES.filter((b) => next.includes(b));
     }
-    const ComboChip = ({ name, on, onToggle, }) => (React__default["default"].createElement(deckyFrontendLib.Focusable, { onActivate: onToggle, onClick: onToggle, style: {
+    const CHIP_FOCUS = [
+        "dv-chip-focus",
+        deckyFrontendLib.gamepadDialogClasses["ItemFocusAnim-darkGrey"],
+        deckyFrontendLib.gamepadDialogClasses.focusAnimation,
+    ]
+        .filter(Boolean)
+        .join(" ");
+    const ComboChip = ({ name, on, onToggle, }) => (React__default["default"].createElement(deckyFrontendLib.Focusable, { onActivate: onToggle, onClick: onToggle, focusClassName: CHIP_FOCUS, style: {
             flex: 1,
             textAlign: "center",
             padding: "8px 0",
@@ -415,12 +383,13 @@
                         } })),
                 channelSummary()),
             React__default["default"].createElement(deckyFrontendLib.PanelSection, { title: "Trigger combo" },
+                React__default["default"].createElement("style", null, `.dv-chip-focus{background:#1a9fff!important;color:#fff!important;opacity:1!important;font-weight:600}`),
                 React__default["default"].createElement(deckyFrontendLib.PanelSectionRow, null,
                     React__default["default"].createElement("div", { style: { fontSize: "12px", opacity: 0.7, marginBottom: "8px" } },
                         "Hold ",
                         buttons.join(" + "))),
                 React__default["default"].createElement(deckyFrontendLib.PanelSectionRow, null,
-                    React__default["default"].createElement(deckyFrontendLib.Focusable, { style: { display: "flex", flexDirection: "column", gap: 6 } }, BUTTON_ROWS.map((row) => (React__default["default"].createElement(deckyFrontendLib.Focusable, { key: row.join(), style: { display: "flex", gap: 6 }, "flow-children": "row" }, row.map((name) => (React__default["default"].createElement(ComboChip, { key: name, name: name, on: buttons.includes(name), onToggle: async () => {
+                    React__default["default"].createElement(deckyFrontendLib.Focusable, { style: { display: "flex", flexDirection: "column", gap: 6 }, noFocusRing: true }, BUTTON_ROWS.map((row) => (React__default["default"].createElement(deckyFrontendLib.Focusable, { key: row.join(), style: { display: "flex", gap: 6 }, "flow-children": "row", noFocusRing: true }, row.map((name) => (React__default["default"].createElement(ComboChip, { key: name, name: name, on: buttons.includes(name), onToggle: async () => {
                             const next = nextCombo(buttons, name);
                             if (next === buttons)
                                 return;
@@ -429,15 +398,22 @@
                         } })))))))))));
     };
     var index = deckyFrontendLib.definePlugin(() => {
+        getStatus().then((status) => {
+            if (!status?.success)
+                return;
+            logic.prevRecordingStartCount = status.recording_start_count || 0;
+            logic.enabled = !!status.enabled;
+        });
         const interval = setInterval(() => {
             logic.poll();
-        }, 800);
+        }, 50);
         return {
             title: React__default["default"].createElement("div", null, "DeckVoice"),
             content: React__default["default"].createElement(DeckVoicePanel, null),
             icon: React__default["default"].createElement(FaMicrophone, null),
             onDismount() {
                 clearInterval(interval);
+                logic.hide();
             },
         };
     });

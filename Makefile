@@ -2,6 +2,8 @@ DECK_HOST ?= 192.168.1.216
 DECK_USER ?= deck
 DECK_PLUGIN ?= /home/deck/homebrew/plugins/DeckVoice
 PYTHON ?= $(CURDIR)/.venv/bin/python
+ARTIFACT_DIR ?= /tmp/deckvoice-ci
+STAGING ?= /tmp/deckvoice-plugin
 
 .PHONY: test deploy logs restart frontend bin artifact venv
 
@@ -25,21 +27,20 @@ bin:
 	chmod +x bin/whisper-server bin/ydotool bin/ydotoold
 
 artifact:
-	rm -rf /tmp/deckvoice-ci
-	mkdir -p /tmp/deckvoice-ci
-	gh run download --name DeckVoice --dir /tmp/deckvoice-ci
-	unzip -l /tmp/deckvoice-ci/*.zip
+	rm -rf $(ARTIFACT_DIR)
+	mkdir -p $(ARTIFACT_DIR)
+	gh run download -n DeckVoice -D $(ARTIFACT_DIR)
 
-deploy: test
-	ssh $(DECK_USER)@$(DECK_HOST) 'sudo mkdir -p $(DECK_PLUGIN) && sudo chown -R $(DECK_USER):$(DECK_USER) $(DECK_PLUGIN)'
-	rsync -rlvz --delete \
-		--exclude node_modules \
-		--exclude .git \
-		--exclude .venv \
-		--exclude __pycache__ \
-		--exclude .pytest_cache \
-		--exclude models \
-		./ $(DECK_USER)@$(DECK_HOST):$(DECK_PLUGIN)/
+deploy: test artifact
+	rm -rf $(STAGING)
+	mkdir -p $(STAGING)
+	unzip -qo "$(ARTIFACT_DIR)"/*.zip -d $(STAGING)
+	src=$(STAGING); \
+	if [ -f $(STAGING)/DeckVoice/plugin.json ]; then src=$(STAGING)/DeckVoice; \
+	elif [ ! -f $(STAGING)/plugin.json ]; then echo "no plugin.json in artifact" >&2; exit 1; fi; \
+	ssh $(DECK_USER)@$(DECK_HOST) 'sudo mkdir -p $(DECK_PLUGIN)'; \
+	rsync -rlvz --delete --rsync-path="sudo rsync" --exclude models \
+		"$$src"/ $(DECK_USER)@$(DECK_HOST):$(DECK_PLUGIN)/; \
 	ssh $(DECK_USER)@$(DECK_HOST) 'sudo systemctl restart plugin_loader'
 
 restart:

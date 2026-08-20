@@ -42,7 +42,7 @@ GGML_MODEL_BASE_URL = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main
 
 WHISPER_SERVER_HOST = "127.0.0.1"
 WHISPER_SERVER_PORT = 8178
-PREVIEW_INTERVAL_S = 0.8
+MIN_INFERENCE_BYTES = 8000
 YDOTOOL_SOCKET = "/tmp/deckvoice-ydotool.sock"
 
 
@@ -311,7 +311,7 @@ class VoiceService:
         self.status = "off"
 
     def _inference(self, pcm_int16: bytes, sample_rate: int) -> str:
-        if not self.server_ready or len(pcm_int16) < sample_rate:
+        if not self.server_ready or len(pcm_int16) < MIN_INFERENCE_BYTES:
             return ""
         wav = _wav_bytes(pcm_int16, sample_rate)
         fields = {
@@ -393,14 +393,16 @@ class VoiceService:
             self.preview_thread.start()
 
     def _preview_loop(self):
-        while not self.preview_stop.wait(PREVIEW_INTERVAL_S):
-            if not self.is_recording:
-                break
+        last_len = 0
+        while not self.preview_stop.is_set():
             pcm = self._snapshot_pcm()
-            if not pcm:
+            pcm16 = self._resample_to_16k(pcm, self.sample_rate) if pcm else b""
+            if len(pcm) <= last_len or len(pcm16) < MIN_INFERENCE_BYTES:
+                if self.preview_stop.wait(0.05):
+                    break
                 continue
-            pcm16 = self._resample_to_16k(pcm, self.sample_rate)
             text = self._inference(pcm16, 16000)
+            last_len = len(pcm)
             if text:
                 self.preview_text = text
 

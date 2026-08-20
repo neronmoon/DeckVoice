@@ -6,6 +6,7 @@ import {
 	DropdownItem,
 	DropdownOption,
 	Focusable,
+	gamepadDialogClasses,
 } from "decky-frontend-lib";
 
 import { callable, toaster } from "@decky/api";
@@ -53,71 +54,33 @@ function friendlyStatus(status: RpcResponse | null): string {
 class DeckVoiceLogic {
 	enabled = false;
 	prevRecordingStartCount = 0;
-	lastToastId = -1;
+	toast: { dismiss: () => void } | null = null;
 	lastPreview = "";
+	pollInFlight = false;
 
-	notify = async (title: string, body: string, duration = 4000): Promise<number> => {
-		const id: number = (window as any).NotificationStore
-			? (window as any).NotificationStore.m_nNextTestNotificationID++
-			: 0;
-		const toastData: any = {
-			nNotificationID: id,
-			bNewIndicator: false,
-			rtCreated: Date.now(),
-			eType: 43,
-			eSource: 1,
-			nToastDurationMS: duration,
-			data: { title, body, duration, critical: false },
-			decky: true,
-		};
-		const info: any = {
-			showToast: true,
-			sound: 6,
-			playSound: false,
-			eFeature: 0,
-			toastDurationMS: duration,
-			bCritical: false,
-			fnTray: (_t: any, tray: any) => {
-				tray.unshift({ eType: 31, notifications: [toastData] });
-			},
-		};
+	show(body: string) {
+		this.hide();
 		try {
-			(window as any).NotificationStore.ProcessNotification(info, toastData, 0);
-		} catch (_e) {
-			toaster.toast({ title, body, duration, critical: false });
-		}
-		return id;
-	};
-
-	dismissNotification = (id: number) => {
-		try {
-			const toastData: any = {
-				nNotificationID: id,
-				bNewIndicator: false,
-				rtCreated: Date.now(),
-				eType: 43,
-				eSource: 1,
-				nToastDurationMS: 1,
-				data: { title: "", body: "", duration: 1, critical: false },
-				decky: true,
-			};
-			const info: any = {
-				showToast: true,
-				sound: 6,
+			this.toast = toaster.toast({
+				title: "DeckVoice",
+				body,
+				duration: 60000,
+				critical: false,
 				playSound: false,
-				eFeature: 0,
-				toastDurationMS: 1,
-				bCritical: false,
-				fnTray: (_t: any, tray: any) => {
-					tray.unshift({ eType: 31, notifications: [toastData] });
-				},
-			};
-			(window as any).NotificationStore.ProcessNotification(info, toastData, 0);
+			});
 		} catch (_e) {}
-	};
+	}
+
+	hide() {
+		try {
+			this.toast?.dismiss();
+		} catch (_e) {}
+		this.toast = null;
+	}
 
 	poll = async () => {
-		if (!this.enabled) return;
+		if (!this.enabled || this.pollInFlight) return;
+		this.pollInFlight = true;
 		try {
 			const status = await getStatus();
 			if (!status?.success) return;
@@ -125,23 +88,23 @@ class DeckVoiceLogic {
 			if (status.recording_start_count > this.prevRecordingStartCount) {
 				this.prevRecordingStartCount = status.recording_start_count;
 				this.lastPreview = "";
-				if (this.lastToastId >= 0) this.dismissNotification(this.lastToastId);
-				this.lastToastId = await this.notify("DeckVoice", "Listening…", 60000);
+				this.show("Listening…");
 			}
 
 			if (status.recording) {
 				const preview = (status.preview_text || "").trim();
 				if (preview && preview !== this.lastPreview) {
 					this.lastPreview = preview;
-					if (this.lastToastId >= 0) this.dismissNotification(this.lastToastId);
-					this.lastToastId = await this.notify("DeckVoice", preview, 60000);
+					this.show(preview);
 				}
-			} else if (this.lastToastId >= 0 && !status.recording) {
-				this.dismissNotification(this.lastToastId);
-				this.lastToastId = -1;
+			} else if (this.toast) {
+				this.hide();
 				this.lastPreview = "";
 			}
-		} catch (_e) {}
+		} catch (_e) {
+		} finally {
+			this.pollInFlight = false;
+		}
 	};
 }
 
@@ -155,6 +118,14 @@ function nextCombo(current: string[], name: string): string[] {
 	return BUTTON_NAMES.filter((b) => next.includes(b));
 }
 
+const CHIP_FOCUS = [
+	"dv-chip-focus",
+	gamepadDialogClasses["ItemFocusAnim-darkGrey"],
+	gamepadDialogClasses.focusAnimation,
+]
+	.filter(Boolean)
+	.join(" ");
+
 const ComboChip: VFC<{ name: string; on: boolean; onToggle: () => void }> = ({
 	name,
 	on,
@@ -163,6 +134,7 @@ const ComboChip: VFC<{ name: string; on: boolean; onToggle: () => void }> = ({
 	<Focusable
 		onActivate={onToggle}
 		onClick={onToggle}
+		focusClassName={CHIP_FOCUS}
 		style={{
 			flex: 1,
 			textAlign: "center",
@@ -383,18 +355,20 @@ const DeckVoicePanel: VFC = () => {
 			</PanelSection>
 
 			<PanelSection title="Trigger combo">
+				<style>{`.dv-chip-focus{background:#1a9fff!important;color:#fff!important;opacity:1!important;font-weight:600}`}</style>
 				<PanelSectionRow>
 					<div style={{ fontSize: "12px", opacity: 0.7, marginBottom: "8px" }}>
 						Hold {buttons.join(" + ")}
 					</div>
 				</PanelSectionRow>
 				<PanelSectionRow>
-					<Focusable style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+					<Focusable style={{ display: "flex", flexDirection: "column", gap: 6 }} noFocusRing={true}>
 						{BUTTON_ROWS.map((row) => (
 							<Focusable
 								key={row.join()}
 								style={{ display: "flex", gap: 6 }}
 								flow-children="row"
+								noFocusRing={true}
 							>
 								{row.map((name) => (
 									<ComboChip
@@ -419,9 +393,14 @@ const DeckVoicePanel: VFC = () => {
 };
 
 export default definePlugin(() => {
+	getStatus().then((status) => {
+		if (!status?.success) return;
+		logic.prevRecordingStartCount = status.recording_start_count || 0;
+		logic.enabled = !!status.enabled;
+	});
 	const interval = setInterval(() => {
 		logic.poll();
-	}, 800);
+	}, 50);
 
 	return {
 		title: <div>DeckVoice</div>,
@@ -429,6 +408,7 @@ export default definePlugin(() => {
 		icon: <FaMicrophone />,
 		onDismount() {
 			clearInterval(interval);
+			logic.hide();
 		},
 	};
 });

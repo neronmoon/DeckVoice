@@ -22,6 +22,29 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: actions/cache@v4
+        id: backend
+        with:
+          path: bin
+          key: bin-${{ hashFiles('backend/Dockerfile', 'backend/entrypoint.sh', 'backend/requirements.txt') }}
+
+      - name: Build backend
+        if: steps.backend.outputs.cache-hit != 'true'
+        run: |
+          docker build --platform=linux/amd64 -t deckvoice-backend ./backend
+          mkdir -p bin
+          docker run --rm --platform=linux/amd64 \
+            -v "$GITHUB_WORKSPACE/backend:/backend" \
+            -v "$GITHUB_WORKSPACE/bin:/backend/out" \
+            deckvoice-backend
+          chmod +x bin/whisper-server bin/ydotool bin/ydotoold
+
+      - name: Stage backend out
+        run: |
+          test -x bin/whisper-server
+          mkdir -p backend/out
+          cp -a bin/. backend/out/
+
       - name: Download Decky CLI
         run: |
           curl -fL -o /tmp/decky-cli \
@@ -29,7 +52,7 @@ jobs:
           chmod +x /tmp/decky-cli
 
       - name: Build plugin
-        run: sudo /tmp/decky-cli plugin build -b -t /tmp/deckvoice-decky-build -o build-output -s directory .
+        run: sudo /tmp/decky-cli plugin build -t /tmp/deckvoice-decky-build -o build-output -s directory .
 
       - name: Validate artifact
         run: |
