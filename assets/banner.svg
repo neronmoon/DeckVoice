@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="240" viewBox="0 0 960 240" role="img" aria-label="DeckVoice">
+  <defs>
+    <linearGradient id="plate" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#1b1f24"/>
+      <stop offset="100%" stop-color="#0f1216"/>
+    </linearGradient>
+  </defs>
+  <rect width="960" height="240" rx="28" fill="url(#plate)"/>
+  <rect x="1.5" y="1.5" width="957" height="237" rx="26.5" fill="none" stroke="#2a3038" stroke-width="3"/>
+  <g transform="translate(210 48)" fill="#f5f7fa">
+    <rect x="34" y="8" width="44" height="72" rx="22"/>
+    <path d="M22 52c0 26 16 44 34 44s34-18 34-44h-14c0 18-10 30-20 30s-20-12-20-30H22z"/>
+    <rect x="50" y="96" width="12" height="18" rx="3"/>
+    <rect x="30" y="110" width="52" height="12" rx="6"/>
+  </g>
+  <text x="340" y="138" fill="#f5f7fa" font-family="Segoe UI, Helvetica Neue, Arial, sans-serif" font-size="72" font-weight="700" letter-spacing="-1.5">DeckVoice</text>
+  <text x="344" y="178" fill="#8b93a0" font-family="Segoe UI, Helvetica Neue, Arial, sans-serif" font-size="22" font-weight="500">Talk. The Deck types it into chat.</text>
+</svg>

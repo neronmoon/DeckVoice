@@ -36,22 +36,34 @@ const BUTTON_ROWS = [
 ];
 
 const MODEL_LABELS: Record<string, string> = {
-	tiny: "Tiny (fastest)",
-	base: "Base",
-	"small-q5_1": "Small",
-	"medium-q5_0": "Medium",
+	tiny: "Tiny (42 MB)",
+	base: "Base (78 MB)",
+	"small-q5_1": "Small (181 MB)",
+	"medium-q5_0": "Medium (514 MB)",
+	"large-q5_0": "Large (1031 MB)",
 };
 
-function friendlyStatus(status: RpcResponse | null): string {
-	if (!status?.success) return "Unavailable";
-	if (!status.enabled) return "Off";
-	if (status.model_loading) return "Starting…";
-	if (status.status === "error" || status.model_load_error) return "Failed to start";
-	if (status.recording) return "Listening";
-	if (status.status === "transcribing") return "Sending…";
-	if (status.server_ready || status.status === "listening") return "Ready";
-	if (status.status === "loading") return "Starting…";
-	return "Off";
+const STATUS = {
+	off: { color: "rgba(255,255,255,0.28)", hint: "Off", pulse: false },
+	loading: { color: "#f5c14a", hint: "Loading model…", pulse: true },
+	ready: { color: "#3dd68c", hint: "Ready", pulse: false },
+	recording: { color: "#1a9fff", hint: "Listening", pulse: true },
+	sending: { color: "#1a9fff", hint: "Sending…", pulse: true },
+	error: { color: "#ff6b6b", hint: "Failed to start. See /tmp/deckvoice.log", pulse: false },
+	unavailable: { color: "#ff6b6b", hint: "Unavailable", pulse: false },
+} as const;
+
+type StatusKind = keyof typeof STATUS;
+
+function statusKind(status: RpcResponse | null, loading: boolean): StatusKind {
+	if (loading) return "loading";
+	if (!status?.success) return "unavailable";
+	if (status.model_loading || status.status === "loading") return "loading";
+	if (status.status === "error" || status.model_load_error) return "error";
+	if (status.recording) return "recording";
+	if (status.status === "transcribing") return "sending";
+	if (status.server_ready || status.status === "listening") return "ready";
+	return "off";
 }
 
 function nextCombo(current: string[], name: string): string[] {
@@ -86,14 +98,15 @@ const CHIP_FOCUS = [
 	.filter(Boolean)
 	.join(" ");
 
-const ComboChip: VFC<{ name: string; on: boolean; onToggle: () => void }> = ({
+const ComboChip: VFC<{ name: string; on: boolean; locked: boolean; onToggle: () => void }> = ({
 	name,
 	on,
+	locked,
 	onToggle,
 }) => (
 	<Focusable
-		onActivate={onToggle}
-		onClick={onToggle}
+		onActivate={locked ? undefined : onToggle}
+		onClick={locked ? undefined : onToggle}
 		focusClassName={CHIP_FOCUS}
 		style={{
 			flex: 1,
@@ -103,44 +116,25 @@ const ComboChip: VFC<{ name: string; on: boolean; onToggle: () => void }> = ({
 			background: on ? "rgba(255,255,255,0.16)" : "rgba(255,255,255,0.04)",
 			fontSize: 14,
 			fontWeight: on ? 600 : 400,
-			opacity: on ? 1 : 0.55,
+			opacity: locked ? 0.35 : on ? 1 : 0.55,
 		}}
 	>
 		{name}
 	</Focusable>
 );
 
-const StatusLine: VFC<{ label: string; failed: boolean }> = ({
-	label,
-	failed,
-}) => (
-	<div style={{ padding: "4px 0 8px" }}>
-		<div
-			style={{
-				fontSize: "14px",
-				opacity: failed ? 1 : 0.85,
-				color: failed ? "#ff8a8a" : undefined,
-			}}
-		>
-			{label}
-		</div>
-		{failed ? (
-			<div style={{ marginTop: "4px", fontSize: "12px", opacity: 0.65 }}>
-				See /tmp/deckvoice.log
-			</div>
-		) : null}
-	</div>
+const StatusDot: VFC<{ color: string; pulse?: boolean }> = ({ color, pulse }) => (
+	<div className={pulse ? "dv-dot dv-dot-pulse" : "dv-dot"} style={{ background: color }} />
 );
 
 const DeckVoicePanel: VFC = () => {
 	const [enabled, setEnabled] = useState(false);
 	const [busy, setBusy] = useState(false);
-	const [statusLabel, setStatusLabel] = useState("Off");
-	const [failed, setFailed] = useState(false);
+	const [status, setStatus] = useState<RpcResponse | null>(null);
 	const [buttons, setButtons] = useState<string[]>(["L1", "R1"]);
 	const [game, setGame] = useState("wow");
 	const [presets, setPresets] = useState<Record<string, any>>({});
-	const [whisperModel, setWhisperModel] = useState("base");
+	const [whisperModel, setWhisperModel] = useState("small-q5_1");
 	const [whisperLanguage, setWhisperLanguage] = useState("auto");
 	const [modelOptions, setModelOptions] = useState<DropdownOption[]>([]);
 	const [languageOptions, setLanguageOptions] = useState<DropdownOption[]>([]);
@@ -152,24 +146,23 @@ const DeckVoicePanel: VFC = () => {
 		setEnabled(!!cfg.enabled);
 		setButtons(cfg.buttons || ["L1", "R1"]);
 		setGame(cfg.game || "wow");
-		setWhisperModel(cfg.whisperModel || "base");
+		setWhisperModel(cfg.whisperModel || "small-q5_1");
 		setWhisperLanguage(cfg.whisperLanguage || "auto");
 		setAppId(cfg.appId || "");
 		setAppName(cfg.appName || "");
 	};
 
-	const applyStatus = (status: RpcResponse) => {
-		setStatusLabel(friendlyStatus(status));
-		setFailed(!!status.enabled && (!!status.model_load_error || status.status === "error"));
-		if (status.profileEnabled !== undefined) {
-			setEnabled(!!status.profileEnabled);
+	const applyStatus = (next: RpcResponse) => {
+		setStatus(next);
+		if (next.profileEnabled !== undefined) {
+			setEnabled(!!next.profileEnabled);
 		} else {
-			setEnabled(!!status.enabled);
+			setEnabled(!!next.enabled);
 		}
-		const nextAppId = status.appId || "";
-		const nextAppName = status.appName || "";
-		if (status.appId !== undefined) setAppId(nextAppId);
-		if (status.appName !== undefined) setAppName(nextAppName);
+		const nextAppId = next.appId || "";
+		const nextAppName = next.appName || "";
+		if (next.appId !== undefined) setAppId(nextAppId);
+		if (next.appName !== undefined) setAppName(nextAppName);
 		return nextAppId;
 	};
 
@@ -216,19 +209,16 @@ const DeckVoicePanel: VFC = () => {
 	}, [appId]);
 
 	const inGame = !!appId;
+	const kind = statusKind(status, busy);
+	const view = STATUS[kind];
+	const locked = kind === "loading";
 
 	const onToggleEnabled = async (value: boolean) => {
-		if (!inGame) return;
-		setBusy(true);
-		setFailed(false);
+		if (!inGame || locked) return;
+		setBusy(value);
 		setEnabled(value);
-		setStatusLabel(value ? "Starting…" : "Off");
 		const res = await setEnabledRpc(value);
-		if (!res?.success) {
-			setFailed(true);
-			setStatusLabel("Failed to start");
-			setEnabled(false);
-		}
+		if (!res?.success) setEnabled(false);
 		await refresh();
 		setBusy(false);
 	};
@@ -255,6 +245,7 @@ const DeckVoicePanel: VFC = () => {
 
 	return (
 		<>
+			<style>{`.dv-chip-focus{background:#1a9fff!important;color:#fff!important;opacity:1!important;font-weight:600}.dv-dot{width:10px;height:10px;border-radius:50%;flex-shrink:0}.dv-dot-pulse{animation:dv-pulse 1s ease-in-out infinite}@keyframes dv-pulse{50%{opacity:.35}}`}</style>
 			<PanelSection title="DeckVoice">
 				<PanelSectionRow>
 					<div style={{ fontSize: "13px", opacity: 0.8, marginBottom: "6px" }}>
@@ -264,20 +255,21 @@ const DeckVoicePanel: VFC = () => {
 				<PanelSectionRow>
 					<ToggleField
 						label="Enable"
+						icon={<StatusDot color={view.color} pulse={view.pulse} />}
+						tooltip={view.hint}
 						description={
-							busy
-								? "Please wait…"
-								: inGame
-									? "GPU Whisper. Off frees VRAM."
-									: "Launch a game to enable"
+							kind === "loading"
+								? view.hint
+								: kind === "error"
+									? view.hint
+									: inGame
+										? "GPU Whisper. Off frees VRAM."
+										: "Launch a game to enable"
 						}
 						checked={enabled}
-						disabled={busy || !inGame}
+						disabled={locked || !inGame}
 						onChange={onToggleEnabled}
 					/>
-				</PanelSectionRow>
-				<PanelSectionRow>
-					<StatusLine label={statusLabel} failed={failed} />
 				</PanelSectionRow>
 			</PanelSection>
 
@@ -287,12 +279,14 @@ const DeckVoicePanel: VFC = () => {
 						label="Model"
 						rgOptions={modelOptions}
 						selectedOption={whisperModel}
-						disabled={busy}
+						disabled={locked}
 						onChange={async (option: DropdownOption) => {
 							const value = String(option.data);
 							setWhisperModel(value);
+							if (enabled) setBusy(true);
 							await setWhisperModelRpc(value);
 							await refresh();
+							setBusy(false);
 						}}
 					/>
 				</PanelSectionRow>
@@ -301,12 +295,14 @@ const DeckVoicePanel: VFC = () => {
 						label="Language"
 						rgOptions={languageOptions}
 						selectedOption={whisperLanguage}
-						disabled={busy}
+						disabled={locked}
 						onChange={async (option: DropdownOption) => {
 							const value = String(option.data);
 							setWhisperLanguage(value);
+							if (enabled) setBusy(true);
 							await setWhisperLanguageRpc(value);
 							await refresh();
+							setBusy(false);
 						}}
 					/>
 				</PanelSectionRow>
@@ -318,7 +314,7 @@ const DeckVoicePanel: VFC = () => {
 						label="Chat"
 						rgOptions={presetOptions}
 						selectedOption={game}
-						disabled={busy}
+						disabled={locked}
 						onChange={async (option: DropdownOption) => {
 							const value = String(option.data);
 							setGame(value);
@@ -331,7 +327,6 @@ const DeckVoicePanel: VFC = () => {
 			</PanelSection>
 
 			<PanelSection title="Trigger combo">
-				<style>{`.dv-chip-focus{background:#1a9fff!important;color:#fff!important;opacity:1!important;font-weight:600}`}</style>
 				<PanelSectionRow>
 					<div style={{ fontSize: "12px", opacity: 0.7, marginBottom: "8px" }}>
 						Hold {buttons.join(" + ")}
@@ -351,7 +346,9 @@ const DeckVoicePanel: VFC = () => {
 										key={name}
 										name={name}
 										on={buttons.includes(name)}
+										locked={locked}
 										onToggle={async () => {
+											if (locked) return;
 											const next = nextCombo(buttons, name);
 											if (next === buttons) return;
 											setButtons(next);

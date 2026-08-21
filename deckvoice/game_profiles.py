@@ -2,7 +2,7 @@ DEFAULT_PROFILE = {
     "enabled": False,
     "game": "wow",
     "buttons": ["L1", "R1"],
-    "whisperModel": "base",
+    "whisperModel": "small-q5_1",
     "whisperLanguage": "auto",
 }
 
@@ -21,7 +21,7 @@ def normalize_profile(raw, presets, models, languages):
     if profile.get("game") not in presets:
         profile["game"] = "wow"
     if profile.get("whisperModel") not in models:
-        profile["whisperModel"] = "base"
+        profile["whisperModel"] = "small-q5_1"
     if profile.get("whisperLanguage") not in languages:
         profile["whisperLanguage"] = "auto"
     if not isinstance(profile.get("buttons"), list) or not profile["buttons"]:

@@ -1,57 +1,82 @@
-# DeckVoice
+<p align="center">
+  <img src="assets/banner.svg" alt="DeckVoice" width="640"/>
+</p>
 
-GPU push-to-talk voice input for Steam Deck (Decky Loader). Hold a trigger combo, release to type into the focused game chat.
+<p align="center">
+  <strong>Talk. The Deck types it into chat.</strong>
+</p>
 
-## Layout
+<p align="center">
+  <a href="https://github.com/neronmoon/DeckVoice/actions"><img src="https://img.shields.io/github/actions/workflow/status/neronmoon/DeckVoice/build.yml?branch=main&label=build" alt="Build"/></a>
+  <img src="https://img.shields.io/badge/version-0.1.0-blue" alt="Version 0.1.0"/>
+  <img src="https://img.shields.io/badge/license-MIT-green" alt="MIT"/>
+  <img src="https://img.shields.io/badge/platform-Steam%20Deck-1a9fff" alt="Steam Deck"/>
+  <img src="https://img.shields.io/badge/Decky-plugin-7289da" alt="Decky"/>
+</p>
 
-```
-main.py                 # Decky entry (bootstrap)
-deckvoice/              # Python package
-  plugin.py             # Plugin RPC / lifecycle
-  voice_service.py      # Whisper + mic + ydotool
-  controller_listener.py
-  deck_hid.py
-src/                    # QAM frontend (TypeScript)
-defaults/               # game presets, channel languages
-backend/                # Docker build → bin/
-  Dockerfile
-  entrypoint.sh
-  requirements.txt
-tests/
-```
+Hold a combo. Speak. Release. DeckVoice types into the focused game chat — no soft keyboard, no thumb-typing mid-raid.
+
+In Warcraft, say the channel first: **party pull now** becomes `/p pull now`.
+
+## Contents
+
+- [Features](#features)
+- [How it works](#how-it-works)
+- [Profiles](#profiles)
+- [Install](#install)
+- [License](#license)
 
 ## Features
 
-- **Trigger combo** (default L1+R1) via raw Steam Deck HID
-- Chat insert on release
-- **Enable** fully starts/stops `whisper-server` (Vulkan), HID listener, and `ydotoold` so VRAM is free when off
-- Model size and language in QAM
-- Game profiles: **World of Warcraft** (`party hello` → `/p hello`) and **Generic**
+- **Push-to-talk** — hold a custom combo (default **L1 + R1**, up to 5 buttons)
+- **On-screen overlay** — mic + level meter while you hold
+- **Per-game profiles** — settings follow the running title; Enable only works in-game
+- **World of Warcraft chat** — voice a channel, then the message
+- **Multilingual channels** — party / пати / groupe / Gruppe / … across 15 languages
+- **Generic profile** — plain typing for any other game
+- **Model & language** — Tiny → Medium and auto-detect, all from QAM
+- **Clean off switch** — Disable frees the Deck’s GPU for the game
 
-## Requirements
+## How it works
 
-- Steam Deck, Game Mode, [Decky Loader](https://decky.xyz)
-- SSH enabled for deploy (`Settings → System → Enable SSH`)
+1. Launch a game in Game Mode
+2. Open QAM → **DeckVoice** → **Enable**
+3. Hold your trigger combo and talk
+4. Release — the text lands in chat
 
-## Dev loop
+First Enable downloads a speech model. After that it’s ready when you flip the switch.
 
-```bash
-make test
-npm install && npm run build
-make bin      # linux/amd64 Docker build
-make deploy   # deck@192.168.1.216
-make logs
-```
+## Profiles
 
-First Enable downloads a ggml model into Decky settings (`models/`).
+### World of Warcraft
 
-## Smoke checklist (on Deck)
+Say the channel, then the line:
 
-1. QAM → DeckVoice → Enable
-2. Hold Trigger combo → toast with live text
-3. Release → typed into chat (WoW: Enter, `/p …`, Enter)
-4. Disable → VRAM freed
+| You say | Chat gets |
+| --- | --- |
+| `party ready` | `/p ready` |
+| `raid stack on me` | `/raid stack on me` |
+| `guild hello` | `/g hello` |
+| `say looking for group` | `/s looking for group` |
+| `yell pull!` | `/y pull!` |
+| `whisper thanks` | `/w thanks` |
+
+Also: officer, instance, alert, general, trade, LFG, and more. Channel words work in English, Russian, French, German, Spanish, and a dozen others.
+
+### Generic
+
+No slash commands — just your words, typed into whatever chat has focus. Good for everything that isn’t WoW.
+
+## Install
+
+Not in the Decky store yet. Sideload a build:
+
+1. Install [Decky Loader](https://decky.xyz)
+2. Grab the **DeckVoice** zip from the latest [GitHub Actions](https://github.com/neronmoon/DeckVoice/actions) run (artifact named `DeckVoice`)
+3. Sideload the zip in Decky (Developer → Install plugin from ZIP, or your usual sideload path)
+
+**Needs:** Steam Deck, Game Mode, Decky Loader.
 
 ## License
 
-MIT (plugin). Bundled `ydotool` is AGPL-3.0; whisper.cpp is MIT. See `bin/licenses` after build.
+Plugin source is **MIT**. Bundled binaries and libraries are listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

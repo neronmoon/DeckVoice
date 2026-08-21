@@ -16,7 +16,7 @@ from pathlib import Path
 
 logger = logging.getLogger()
 
-WHISPER_MODELS = ("tiny", "base", "small-q5_1", "medium-q5_0")
+WHISPER_MODELS = ("tiny", "base", "small-q5_1", "medium-q5_0", "large-q5_0")
 WHISPER_LANGUAGE_NAMES = {
     "en": "English",
     "ru": "Russian",
@@ -38,6 +38,7 @@ GGML_MODEL_FILES = {
     "base": "ggml-base-q8_0.bin",
     "small-q5_1": "ggml-small-q5_1.bin",
     "medium-q5_0": "ggml-medium-q5_0.bin",
+    "large-q5_0": "ggml-large-v3-q5_0.bin",
 }
 GGML_MODEL_BASE_URL = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main"
 
@@ -126,14 +127,14 @@ class VoiceService:
         plugin_dir,
         models_dir,
         preset=None,
-        model_size="base",
+        model_size="small-q5_1",
         language="auto",
         ca_file=None,
     ):
         self.plugin_dir = Path(plugin_dir)
         self.models_dir = Path(models_dir)
         self.preset = preset or {}
-        self.model_size = model_size if model_size in WHISPER_MODELS else "base"
+        self.model_size = model_size if model_size in WHISPER_MODELS else "small-q5_1"
         self.language = language if language in WHISPER_LANGUAGES else "auto"
         self.ca_file = ca_file
         self.default_channel = self.preset.get("default_channel", "")
