@@ -25,11 +25,15 @@ from deckvoice.game_profiles import (
     update_current_profile,
 )
 from deckvoice.voice_service import (
+    HOLD_TO_REC_SEC,
     WHISPER_LANGUAGE_NAMES,
     WHISPER_LANGUAGES,
     WHISPER_MODELS,
     YDOTOOL_SOCKET,
     VoiceService,
+    confirm_tap,
+    read_mic_quiet,
+    read_tdp_limited,
 )
 
 logger = logging.getLogger()
@@ -75,6 +79,10 @@ class Plugin:
     current_app_id = ""
     current_app_name = ""
     applied_buttons = None
+    press_at = 0.0
+    last_tap_at = 0.0
+    awaiting_hold = False
+    _apply_lock = threading.Lock()
 
     @staticmethod
     def _load_store():
@@ -241,19 +249,50 @@ class Plugin:
                 if not Plugin.controller_enabled:
                     time.sleep(0.1)
                     continue
+                now = time.monotonic()
+                vs = Plugin.voice_service
+                state = False
                 if os.path.exists(STATE_FILE):
                     with open(STATE_FILE, "r") as f:
                         state = f.read().strip() == "1"
-                    if state and not last_state:
-                        if Plugin.voice_service and not Plugin.voice_service.is_recording:
-                            logger.info("Trigger pressed - start recording")
-                            Plugin.voice_service.start_recording()
-                            Plugin.recording_start_count += 1
-                    elif not state and last_state:
-                        if Plugin.voice_service and Plugin.voice_service.is_recording:
-                            logger.info("Trigger released - stop and send")
-                            Plugin.voice_service.stop_recording(send=True)
-                    last_state = state
+                if vs and vs.pending_expired():
+                    vs.clear_pending()
+                pressed = state and not last_state
+                released = last_state and not state
+                if (
+                    vs
+                    and Plugin.awaiting_hold
+                    and state
+                    and not released
+                    and not vs.is_recording
+                    and now - Plugin.press_at >= HOLD_TO_REC_SEC
+                ):
+                    vs.start_recording()
+                    Plugin.recording_start_count += 1
+                    Plugin.awaiting_hold = False
+                    Plugin.last_tap_at = 0.0
+                if pressed:
+                    Plugin.press_at = now
+                    if vs and vs.pending_text and not vs.is_recording:
+                        Plugin.awaiting_hold = True
+                    elif vs and not vs.is_recording:
+                        logger.info("Trigger pressed - start recording")
+                        vs.start_recording()
+                        Plugin.recording_start_count += 1
+                        Plugin.awaiting_hold = False
+                elif released:
+                    if vs and vs.is_recording:
+                        logger.info("Trigger released - stop")
+                        vs.stop_recording(send=True)
+                        Plugin.awaiting_hold = False
+                        Plugin.last_tap_at = 0.0
+                    elif vs and Plugin.awaiting_hold:
+                        Plugin.awaiting_hold = False
+                        hit, Plugin.last_tap_at = confirm_tap(now, Plugin.last_tap_at)
+                        if hit:
+                            vs.confirm_pending()
+                    Plugin.press_at = 0.0
+                last_state = state
 
                 health_check_counter += 1
                 if health_check_counter >= 20:
@@ -322,6 +361,9 @@ class Plugin:
         Plugin.controller_enabled = False
         Plugin.poll_running = False
         Plugin.applied_buttons = None
+        Plugin.press_at = 0.0
+        Plugin.last_tap_at = 0.0
+        Plugin.awaiting_hold = False
         if Plugin.voice_service:
             if Plugin.voice_service.is_recording:
                 Plugin.voice_service.stop_recording(send=False)
@@ -348,6 +390,9 @@ class Plugin:
             and vs.server_ready
         )
         if same_model:
+            vs.model_loading = False
+            vs.download_progress = ""
+            vs.status = "listening"
             Plugin.active_preset = profile["game"]
             vs.set_preset(_game_presets.get(profile["game"], _game_presets.get("wow", {})))
             if Plugin.applied_buttons != profile["buttons"]:
@@ -357,6 +402,20 @@ class Plugin:
 
         Plugin._stop_runtime()
         return Plugin._start_runtime(profile)
+
+    @staticmethod
+    def _apply_in_background(profile):
+        vs = Plugin.voice_service
+        if vs and profile.get("enabled") and Plugin.current_app_id:
+            vs.model_loading = True
+            vs.model_load_error = None
+            vs.status = "loading"
+
+        def run():
+            with Plugin._apply_lock:
+                Plugin._apply_profile(profile)
+
+        threading.Thread(target=run, daemon=True).start()
 
     async def _main(self):
         logger.info("Initializing DeckVoice")
@@ -396,23 +455,15 @@ class Plugin:
             store["profiles"][str(app_id)]["name"] = name
             Plugin._save_store(store)
         profile = Plugin._resolved_profile(store)
-        ok = Plugin._apply_profile(profile)
-        return {
-            "success": ok,
-            "error": None if ok else (Plugin.voice_service.model_load_error if Plugin.voice_service else "start failed"),
-            "config": Plugin._public_config(),
-        }
+        Plugin._apply_in_background(profile)
+        return {"success": True, "config": Plugin._public_config()}
 
     async def set_enabled(self, enabled: bool):
         if not Plugin.current_app_id:
             return {"success": False, "error": "launch a game to enable"}
         store, profile = Plugin._update_current(enabled=bool(enabled))
-        ok = Plugin._apply_profile(profile)
-        return {
-            "success": ok,
-            "error": None if ok else (Plugin.voice_service.model_load_error if Plugin.voice_service else "start failed"),
-            "config": Plugin._public_config(store),
-        }
+        Plugin._apply_in_background(profile)
+        return {"success": True, "config": Plugin._public_config(store)}
 
     async def get_button_config(self):
         return {"success": True, "config": Plugin._public_config()}
@@ -451,12 +502,7 @@ class Plugin:
             return {"success": False, "error": f"unknown model: {model}"}
         store, profile = Plugin._update_current(whisperModel=model)
         if Plugin.controller_enabled:
-            ok = Plugin._apply_profile(profile)
-            return {
-                "success": ok,
-                "error": Plugin.voice_service.model_load_error if Plugin.voice_service else None,
-                "config": Plugin._public_config(store),
-            }
+            Plugin._apply_in_background(profile)
         return {"success": True, "config": Plugin._public_config(store)}
 
     async def set_whisper_language(self, language: str):
@@ -464,12 +510,7 @@ class Plugin:
             return {"success": False, "error": f"unknown language: {language}"}
         store, profile = Plugin._update_current(whisperLanguage=language)
         if Plugin.controller_enabled:
-            ok = Plugin._apply_profile(profile)
-            return {
-                "success": ok,
-                "error": Plugin.voice_service.model_load_error if Plugin.voice_service else None,
-                "config": Plugin._public_config(store),
-            }
+            Plugin._apply_in_background(profile)
         return {"success": True, "config": Plugin._public_config(store)}
 
     async def get_status(self):
@@ -497,4 +538,7 @@ class Plugin:
             "appId": Plugin.current_app_id or "",
             "appName": Plugin.current_app_name or "",
             "profileEnabled": bool(profile.get("enabled")),
+            "mic_quiet": read_mic_quiet(),
+            "tdp_limited": read_tdp_limited(),
+            "download_progress": vs.download_progress if vs else "",
         }

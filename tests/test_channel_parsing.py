@@ -177,6 +177,25 @@ class TestWavAndMultipart:
         wow_svc.start_overlay()
         assert wow_svc._overlay_proc is None
 
+    def test_reap_matching_exes(self, tmp_path, monkeypatch):
+        from deckvoice.voice_service import reap_matching_exes
+
+        binary = tmp_path / "deckvoice-overlay"
+        binary.write_bytes(b"x")
+        other = tmp_path / "other"
+        other.write_bytes(b"y")
+        stale = tmp_path / "deckvoice-overlay (deleted)"
+        stale.write_bytes(b"x")
+        proc = tmp_path / "proc"
+        for pid, target in (("100", binary), ("101", other), ("102", stale)):
+            (proc / pid).mkdir(parents=True)
+            (proc / pid / "exe").symlink_to(target)
+        killed = []
+        monkeypatch.setattr("deckvoice.voice_service.os.kill", lambda pid, _sig: killed.append(pid))
+        monkeypatch.setattr("deckvoice.voice_service.os.waitpid", lambda pid, _flags: (pid, 0))
+        reap_matching_exes(binary, proc)
+        assert sorted(killed) == [100, 102]
+
     def test_stop_whisper_reaps_without_process(self, wow_svc):
         wow_svc.server_process = None
         wow_svc.stop_whisper_server()
@@ -192,6 +211,22 @@ class TestWavAndMultipart:
         wow_svc.stop_recording(send=False)
         assert wow_svc.status == "listening"
         assert wow_svc.is_recording is False
+        assert wow_svc.pending_text == ""
+
+    def test_stop_recording_offers_pending(self, wow_svc, monkeypatch):
+        sent = []
+        wow_svc.server_ready = True
+        wow_svc.is_recording = True
+        wow_svc.sample_rate = 16000
+        wow_svc.audio_chunks = [b"\x00\x00" * 8000]
+        wow_svc._inference = lambda pcm, sr: "hello world"
+        monkeypatch.setattr(wow_svc, "send_to_chat", sent.append)
+        wow_svc.stop_recording(send=True)
+        assert wow_svc.pending_text == "hello world"
+        assert sent == []
+        wow_svc.confirm_pending()
+        assert sent == ["hello world"]
+        assert wow_svc.pending_text == ""
 
 
 def test_vu_levels_silence_is_zero():
@@ -209,6 +244,15 @@ def test_vu_levels_loud_pcm_fills_bars():
     levels = vu_levels(pcm)
     assert len(levels) == 8
     assert all(v > 0.7 for v in levels)
+
+
+def test_vu_levels_speech_is_visible():
+    import struct
+
+    from deckvoice.voice_service import vu_levels
+
+    pcm = struct.pack("<h", 1200) * 64
+    assert all(v > 0.5 for v in vu_levels(pcm))
 
 
 def test_to_mono_mixes_left_and_right():

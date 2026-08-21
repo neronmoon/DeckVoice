@@ -36,11 +36,11 @@ const BUTTON_ROWS = [
 ];
 
 const MODEL_LABELS: Record<string, string> = {
-	tiny: "Tiny (42 MB)",
-	base: "Base (78 MB)",
-	"small-q5_1": "Small (181 MB)",
-	"medium-q5_0": "Medium (514 MB)",
-	"large-q5_0": "Large (1031 MB)",
+	tiny: "Tiny · 42 MB",
+	base: "Base · 78 MB",
+	"small-q5_1": "Small · 181 MB",
+	"medium-q5_0": "Medium · 514 MB",
+	"large-q5_0": "Large · 1 GB",
 };
 
 const STATUS = {
@@ -136,7 +136,9 @@ const DeckVoicePanel: VFC = () => {
 	const [presets, setPresets] = useState<Record<string, any>>({});
 	const [whisperModel, setWhisperModel] = useState("small-q5_1");
 	const [whisperLanguage, setWhisperLanguage] = useState("auto");
-	const [modelOptions, setModelOptions] = useState<DropdownOption[]>([]);
+	const [modelOptions, setModelOptions] = useState<DropdownOption[]>(
+		Object.entries(MODEL_LABELS).map(([data, label]) => ({ data, label }))
+	);
 	const [languageOptions, setLanguageOptions] = useState<DropdownOption[]>([]);
 	const [appId, setAppId] = useState("");
 	const [appName, setAppName] = useState("");
@@ -259,7 +261,9 @@ const DeckVoicePanel: VFC = () => {
 						tooltip={view.hint}
 						description={
 							kind === "loading"
-								? view.hint
+								? status?.download_progress
+									? `Downloading ${status.download_progress}`
+									: view.hint
 								: kind === "error"
 									? view.hint
 									: inGame
@@ -271,22 +275,35 @@ const DeckVoicePanel: VFC = () => {
 						onChange={onToggleEnabled}
 					/>
 				</PanelSectionRow>
+				{status?.mic_quiet ? (
+					<PanelSectionRow>
+						<div style={{ fontSize: "13px", color: "#ffb347", lineHeight: 1.4 }}>
+							Mic is too quiet. Raise Steam microphone volume.
+						</div>
+					</PanelSectionRow>
+				) : null}
+				{status?.tdp_limited ? (
+					<PanelSectionRow>
+						<div style={{ fontSize: "13px", color: "#ffb347", lineHeight: 1.4 }}>
+							TDP limit is on. Performance may be affected.
+						</div>
+					</PanelSectionRow>
+				) : null}
 			</PanelSection>
 
 			<PanelSection title="Recognition">
 				<PanelSectionRow>
 					<DropdownItem
 						label="Model"
+						layout="below"
 						rgOptions={modelOptions}
 						selectedOption={whisperModel}
-						disabled={locked}
+						strDefaultLabel={MODEL_LABELS[whisperModel] || whisperModel}
 						onChange={async (option: DropdownOption) => {
 							const value = String(option.data);
 							setWhisperModel(value);
-							if (enabled) setBusy(true);
 							await setWhisperModelRpc(value);
 							await refresh();
-							setBusy(false);
 						}}
 					/>
 				</PanelSectionRow>
@@ -295,14 +312,11 @@ const DeckVoicePanel: VFC = () => {
 						label="Language"
 						rgOptions={languageOptions}
 						selectedOption={whisperLanguage}
-						disabled={locked}
 						onChange={async (option: DropdownOption) => {
 							const value = String(option.data);
 							setWhisperLanguage(value);
-							if (enabled) setBusy(true);
 							await setWhisperLanguageRpc(value);
 							await refresh();
-							setBusy(false);
 						}}
 					/>
 				</PanelSectionRow>
@@ -314,7 +328,6 @@ const DeckVoicePanel: VFC = () => {
 						label="Chat"
 						rgOptions={presetOptions}
 						selectedOption={game}
-						disabled={locked}
 						onChange={async (option: DropdownOption) => {
 							const value = String(option.data);
 							setGame(value);

@@ -33,7 +33,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update \
     && apt-get install -y --no-install-recommends gcc libc6-dev libglfw3-dev libgl1-mesa-dev libx11-dev libxrandr-dev \
     && rm -rf /var/lib/apt/lists/*
-COPY overlay.c stb_image.h listening.png /
+COPY overlay.c stb_image.h stb_truetype.h listening.png /
 RUN mkdir -p /overlay-out/lib \
     && cc -O2 -o /overlay-out/deckvoice-overlay /overlay.c -lglfw -lGL -lX11 -lm \
     && cp /listening.png /overlay-out/listening.png \

@@ -26,7 +26,7 @@ jobs:
         id: backend
         with:
           path: bin
-          key: bin-${{ hashFiles('backend/Dockerfile', 'backend/entrypoint.sh', 'backend/requirements.txt', 'backend/overlay.c', 'backend/listening.png', 'backend/stb_image.h') }}
+          key: bin-${{ hashFiles('backend/Dockerfile', 'backend/entrypoint.sh', 'backend/requirements.txt', 'backend/overlay.c', 'backend/listening.png', 'backend/stb_image.h', 'backend/stb_truetype.h') }}
 
       - name: Build backend
         if: steps.backend.outputs.cache-hit != 'true'

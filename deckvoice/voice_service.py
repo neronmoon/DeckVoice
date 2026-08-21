@@ -12,6 +12,7 @@ import time
 import urllib.error
 import urllib.request
 import wave
+from collections import deque
 from pathlib import Path
 
 logger = logging.getLogger()
@@ -48,6 +49,24 @@ MIN_INFERENCE_BYTES = 8000
 YDOTOOL_SOCKET = "/tmp/deckvoice-ydotool.sock"
 VU_FILE = "/tmp/deckvoice_vu"
 VU_BARS = 8
+VU_GAIN = 24.0
+PENDING_FILE = "/tmp/deckvoice_pending"
+CONFIRM_SEC = 5.0
+DOUBLE_TAP_SEC = 0.5
+HOLD_TO_REC_SEC = 0.28
+LAST_WAV = "/tmp/deckvoice-last.wav"
+QUIET_MIC_VOLUME = 0.25
+TARGET_PEAK = 18000
+MAX_GAIN = 6.0
+PREROLL_SEC = 0.5
+
+
+def push_preroll(ring, nbytes, chunk, limit):
+    ring.append(chunk)
+    nbytes += len(chunk)
+    while nbytes > limit and ring:
+        nbytes -= len(ring.popleft())
+    return nbytes
 
 
 def to_mono(pcm_int16: bytes, channels: int) -> bytes:
@@ -77,7 +96,7 @@ def vu_levels(pcm_int16: bytes, bars=VU_BARS) -> list:
         for s in sl:
             acc += s * s
         rms = (acc / len(sl)) ** 0.5 / 32768.0
-        out.append(min(1.0, rms * 6.0))
+        out.append(min(1.0, rms * VU_GAIN))
     return out
 
 
@@ -87,6 +106,257 @@ def write_vu(levels) -> None:
             f.write(" ".join(f"{v:.3f}" for v in levels))
     except OSError:
         pass
+
+
+def wrap_pending(text, width=40, max_lines=2):
+    words = text.split()
+    lines = []
+    cur = ""
+    for word in words:
+        trial = f"{cur} {word}".strip()
+        if len(trial) > width and cur:
+            lines.append(cur)
+            cur = word
+        else:
+            cur = trial
+    if cur:
+        lines.append(cur)
+    if len(lines) > max_lines:
+        lines = lines[:max_lines]
+        lines[-1] = lines[-1][: max(1, width - 1)].rstrip() + "…"
+    return "\n".join(lines)
+
+
+def write_pending(text: str) -> None:
+    tmp = f"{PENDING_FILE}.partial"
+    try:
+        with open(tmp, "w") as f:
+            f.write(text or "")
+        os.replace(tmp, PENDING_FILE)
+    except OSError:
+        pass
+
+
+def confirm_tap(now, last_tap, window=DOUBLE_TAP_SEC):
+    if last_tap and 0 < now - last_tap <= window:
+        return True, 0.0
+    return False, now
+
+
+def parse_wpctl_volume(text: str):
+    muted = "[MUTED]" in text
+    vol = float(text.split(":", 1)[1].split()[0])
+    return vol, muted
+
+
+def mic_setting_quiet(text: str, floor=QUIET_MIC_VOLUME) -> bool:
+    vol, muted = parse_wpctl_volume(text)
+    return muted or vol < floor
+
+
+def read_mic_quiet() -> bool:
+    env = os.environ.copy()
+    env["XDG_RUNTIME_DIR"] = "/run/user/1000"
+    r = subprocess.run(
+        ["wpctl", "get-volume", "@DEFAULT_AUDIO_SOURCE@"],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=1,
+    )
+    if r.returncode or not r.stdout.strip():
+        return False
+    return mic_setting_quiet(r.stdout)
+
+
+STEAM_CONFIG_PATHS = (
+    "/home/deck/.steam/steam/config/config.vdf",
+    "/home/deck/.local/share/Steam/config/config.vdf",
+)
+
+
+def tdp_limit_enabled(text: str) -> bool:
+    for line in text.splitlines():
+        if '"TDPLimitEnabled"' not in line:
+            continue
+        if '"1"' in line.split('"TDPLimitEnabled"', 1)[1]:
+            return True
+    return False
+
+
+def read_tdp_limited() -> bool:
+    seen = set()
+    for path in STEAM_CONFIG_PATHS:
+        real = os.path.realpath(path)
+        if real in seen or not os.path.isfile(path):
+            continue
+        seen.add(real)
+        try:
+            with open(path) as f:
+                text = f.read()
+        except OSError:
+            continue
+        if tdp_limit_enabled(text):
+            return True
+    return False
+
+
+def resample_to_16k(pcm: bytes, src_rate: int) -> bytes:
+    if src_rate == 16000:
+        return pcm
+    n = len(pcm) // 2
+    samples = struct.unpack(f"<{n}h", pcm)
+    ratio = src_rate / 16000
+    out = []
+    out_n = int(n / ratio)
+    for i in range(out_n):
+        a = int(i * ratio)
+        b = min(n, int((i + 1) * ratio))
+        if a >= n:
+            break
+        if b <= a:
+            b = min(n, a + 1)
+        out.append(sum(samples[a:b]) // (b - a))
+    return struct.pack(f"<{len(out)}h", *out)
+
+
+def highpass_pcm(pcm_int16: bytes) -> bytes:
+    n = len(pcm_int16) // 2
+    if n < 2:
+        return pcm_int16
+    src = struct.unpack_from(f"<{n}h", pcm_int16)
+    y = [0.0] * n
+    prev_x = 0.0
+    prev_y = 0.0
+    for i, s in enumerate(src):
+        prev_y = s - prev_x + 0.995 * prev_y
+        prev_x = float(s)
+        y[i] = prev_y
+    peak = max(abs(v) for v in y)
+    if peak > 32767:
+        scale = 32767.0 / peak
+        y = [v * scale for v in y]
+    return struct.pack(f"<{n}h", *[int(v) for v in y])
+
+
+def spectral_denoise(pcm_int16: bytes) -> bytes:
+    n = len(pcm_int16) // 2
+    n_fft, hop = 512, 128
+    if n < n_fft:
+        return pcm_int16
+    try:
+        import numpy as np
+    except ImportError:
+        return pcm_int16
+    x = np.frombuffer(pcm_int16, dtype=np.int16).astype(np.float64)
+    w = np.hanning(n_fft)
+    frames = np.lib.stride_tricks.sliding_window_view(x, n_fft)[::hop]
+    spec = np.fft.rfft(frames * w)
+    mag = np.abs(spec)
+    energy = mag.sum(axis=1)
+    k = max(1, len(energy) // 5)
+    noise = np.median(mag[np.argsort(energy)[:k]], axis=0)
+    gain = np.maximum(mag - 1.2 * noise, 0.12 * mag) / np.maximum(mag, 1e-9)
+    cleaned = np.fft.irfft(spec * gain, n=n_fft)
+    out = np.zeros(n)
+    acc = np.zeros(n)
+    for i, chunk in enumerate(cleaned):
+        a = i * hop
+        out[a:a + n_fft] += chunk * w
+        acc[a:a + n_fft] += w * w
+    y = np.divide(out, acc, out=np.zeros_like(out), where=acc > 0.05)
+    tail = (len(cleaned) - 1) * hop + n_fft
+    if tail < n:
+        y[tail:] = x[tail:]
+    return np.clip(y, -32768, 32767).astype(np.int16).tobytes()
+
+
+def drop_hallucination(text: str) -> str:
+    norm = " ".join("".join(c for c in text.lower() if c.isalpha() or c.isspace()).split())
+    if norm in {
+        "thanks for watching",
+        "thank you for watching",
+        "thanks for listening",
+        "thank you for listening",
+        "please subscribe",
+        "thanks for watching everybody",
+        "thank you for watching everybody",
+    }:
+        return ""
+    return text
+
+
+def vad_keep_span(flags, pad):
+    if not any(flags):
+        return 0, 0
+    first = next(i for i, f in enumerate(flags) if f)
+    last = len(flags) - 1 - next(i for i, f in enumerate(reversed(flags)) if f)
+    return max(0, first - pad), min(len(flags), last + pad + 1)
+
+
+def vad_trim(pcm_int16: bytes, rate=16000, mode=2, frame_ms=20, pad_ms=200) -> bytes:
+    frame = rate * frame_ms // 1000 * 2
+    if len(pcm_int16) < frame:
+        return pcm_int16
+    try:
+        import webrtcvad
+    except ImportError:
+        return pcm_int16
+    vad = webrtcvad.Vad(mode)
+    flags = [
+        vad.is_speech(pcm_int16[i:i + frame], rate)
+        for i in range(0, len(pcm_int16) - frame + 1, frame)
+    ]
+    a, b = vad_keep_span(flags, pad_ms // frame_ms)
+    return pcm_int16[a * frame:b * frame]
+
+
+def boost_pcm(pcm_int16: bytes) -> bytes:
+    n = len(pcm_int16) // 2
+    if not n:
+        return pcm_int16
+    samples = struct.unpack_from(f"<{n}h", pcm_int16)
+    peak = max(abs(s) for s in samples)
+    if peak == 0 or peak >= TARGET_PEAK:
+        return pcm_int16
+    gain = min(TARGET_PEAK / peak, MAX_GAIN)
+    return struct.pack(f"<{n}h", *[int(s * gain) for s in samples])
+
+
+def write_last_wav(pcm_int16: bytes, sample_rate: int, path=LAST_WAV) -> None:
+    tmp = f"{path}.partial"
+    with open(tmp, "wb") as f:
+        f.write(_wav_bytes(pcm_int16, sample_rate))
+    os.replace(tmp, path)
+
+
+def reap_matching_exes(binary, proc_dir="/proc"):
+    binary = os.path.realpath(str(binary))
+    if not os.path.isdir(proc_dir):
+        return
+    for entry in os.scandir(proc_dir):
+        if not entry.name.isdigit():
+            continue
+        try:
+            exe = os.path.realpath(os.path.join(proc_dir, entry.name, "exe"))
+        except OSError:
+            continue
+        if exe != binary and not exe.startswith(binary + " "):
+            continue
+        pid = int(entry.name)
+        try:
+            os.kill(pid, 9)
+        except OSError:
+            pass
+        try:
+            os.waitpid(pid, os.WNOHANG)
+        except OSError:
+            pass
+
+
+def download_progress_label(got: int, total: int) -> str:
+    mb = got // (1024 * 1024)
+    return f"{mb} / {total // (1024 * 1024)} MB" if total else f"{mb} MB"
 
 
 def _wav_bytes(pcm_int16: bytes, sample_rate: int) -> bytes:
@@ -144,13 +414,18 @@ class VoiceService:
         self.server_ready = False
         self.model_loading = False
         self.model_load_error = None
+        self.download_progress = ""
         self._server_log_lines = []
         self._server_log_thread = None
         self._overlay_proc = None
+        self.pending_text = ""
+        self.pending_until = 0.0
 
         self.is_recording = False
         self.recording_stream = None
         self.audio_chunks = []
+        self.preroll = deque()
+        self.preroll_bytes = 0
         self.audio_lock = threading.Lock()
         self.sample_rate = 16000
         self.input_channels = 1
@@ -203,12 +478,18 @@ class VoiceService:
         tmp_path = model_path.with_suffix(model_path.suffix + ".partial")
         logger.info(f"Downloading ggml model {filename}")
         self.status = "loading"
+        self.download_progress = "0 MB"
         with urllib.request.urlopen(url, context=self._ssl_context()) as resp, open(tmp_path, "wb") as out:
+            total = int(resp.headers.get("Content-Length") or 0)
+            got = 0
             while True:
                 chunk = resp.read(1024 * 1024)
                 if not chunk:
                     break
                 out.write(chunk)
+                got += len(chunk)
+                self.download_progress = download_progress_label(got, total)
+        self.download_progress = ""
         tmp_path.replace(model_path)
         logger.info(f"Downloaded ggml model to {model_path}")
         return model_path
@@ -263,7 +544,7 @@ class VoiceService:
             self._server_log_thread = threading.Thread(target=self._log_server, daemon=True)
             self._server_log_thread.start()
 
-            deadline = time.monotonic() + 90
+            deadline = time.monotonic() + 180
             while time.monotonic() < deadline:
                 code = self.server_process.poll()
                 if code is not None:
@@ -275,6 +556,7 @@ class VoiceService:
                     self.status = "listening"
                     logger.info("whisper-server ready (gpu)")
                     self.start_overlay()
+                    self.start_input_stream()
                     return True
                 time.sleep(0.2)
             raise TimeoutError(
@@ -285,9 +567,9 @@ class VoiceService:
             self.model_load_error = str(e)
             self.model_loading = False
             self.server_ready = False
-            self.status = "error"
             logger.error("Failed to start whisper-server: %s", e)
             self.stop_whisper_server()
+            self.status = "error"
             return False
 
     def _format_server_exit(self, code):
@@ -339,27 +621,7 @@ class VoiceService:
         return os.path.realpath(self.plugin_dir / "bin" / "whisper-server")
 
     def _reap_whisper_servers(self):
-        binary = self._whisper_binary()
-        if not os.path.isfile(binary) or not os.path.isdir("/proc"):
-            return
-        for entry in os.scandir("/proc"):
-            if not entry.name.isdigit():
-                continue
-            try:
-                exe = os.path.realpath(f"/proc/{entry.name}/exe")
-            except OSError:
-                continue
-            if exe != binary:
-                continue
-            pid = int(entry.name)
-            try:
-                os.kill(pid, 9)
-            except OSError:
-                pass
-            try:
-                os.waitpid(pid, os.WNOHANG)
-            except OSError:
-                pass
+        reap_matching_exes(self._whisper_binary())
 
     def stop_whisper_server(self):
         self.server_ready = False
@@ -378,7 +640,11 @@ class VoiceService:
             except subprocess.TimeoutExpired:
                 pass
         self._reap_whisper_servers()
+        self.clear_pending()
         self.stop_overlay()
+        self.stop_input_stream()
+        self.model_loading = False
+        self.download_progress = ""
         self.status = "off"
 
     def start_overlay(self):
@@ -388,6 +654,7 @@ class VoiceService:
         if not binary.is_file():
             logger.warning("overlay binary missing: %s", binary)
             return
+        reap_matching_exes(binary)
         env = self._server_env()
         display = env.get("DISPLAY") or ":0"
         env["DISPLAY"] = display
@@ -428,6 +695,7 @@ class VoiceService:
                     proc.kill()
                 except OSError:
                     pass
+        reap_matching_exes(self.plugin_dir / "bin" / "deckvoice-overlay")
 
     def _inference(self, pcm_int16: bytes, sample_rate: int) -> str:
         if not self.server_ready or len(pcm_int16) < MIN_INFERENCE_BYTES:
@@ -451,49 +719,24 @@ class VoiceService:
         except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as e:
             logger.warning(f"inference failed: {e}")
             return ""
-        text = payload.get("text") or ""
-        return text.strip()
+        return drop_hallucination((payload.get("text") or "").strip())
 
     def audio_callback(self, indata, frames, time_info, status):
-        if not self.is_recording:
-            return
         raw = to_mono(bytes(indata), self.input_channels)
+        limit = int(self.sample_rate * 2 * PREROLL_SEC)
         with self.audio_lock:
-            self.audio_chunks.append(raw)
-        write_vu(vu_levels(raw))
+            self.preroll_bytes = push_preroll(self.preroll, self.preroll_bytes, raw, limit)
+            if self.is_recording:
+                self.audio_chunks.append(raw)
+        if self.is_recording:
+            write_vu(vu_levels(raw))
 
-    def _drain_pcm(self) -> bytes:
-        with self.audio_lock:
-            data = b"".join(self.audio_chunks)
-            self.audio_chunks = []
-            return data
-
-    def _resample_to_16k(self, pcm: bytes, src_rate: int) -> bytes:
-        if src_rate == 16000:
-            return pcm
-        n = len(pcm) // 2
-        samples = struct.unpack(f"<{n}h", pcm)
-        ratio = src_rate / 16000
-        out_n = int(n / ratio)
-        out = []
-        for i in range(out_n):
-            src_i = int(i * ratio)
-            if src_i >= n:
-                break
-            out.append(samples[src_i])
-        return struct.pack(f"<{len(out)}h", *out)
-
-    def start_recording(self):
+    def start_input_stream(self):
+        if self.recording_stream:
+            return
         import sounddevice as sd
 
-        with self.recording_lock:
-            if self.is_recording:
-                return
-            self.is_recording = True
-            with self.audio_lock:
-                self.audio_chunks = []
-            self.status = "recording"
-
+        try:
             device_info = sd.query_devices(sd.default.device[0], "input")
             self.sample_rate = int(device_info["default_samplerate"])
             self.input_channels = 2 if device_info["max_input_channels"] >= 2 else 1
@@ -504,30 +747,81 @@ class VoiceService:
                 dtype="int16",
             )
             self.recording_stream.start()
+        except Exception as e:
+            logger.warning("mic stream start failed: %s", e)
+            self.recording_stream = None
+
+    def stop_input_stream(self):
+        stream = self.recording_stream
+        self.recording_stream = None
+        if stream:
+            try:
+                stream.stop()
+                stream.close()
+            except Exception:
+                pass
+        with self.audio_lock:
+            self.preroll.clear()
+            self.preroll_bytes = 0
+            self.audio_chunks = []
+
+    def offer_pending(self, text):
+        text = (text or "").strip()
+        if not text:
+            self.clear_pending()
+            return
+        self.pending_text = text
+        self.pending_until = time.monotonic() + CONFIRM_SEC
+        write_pending(wrap_pending(text))
+
+    def clear_pending(self):
+        self.pending_text = ""
+        self.pending_until = 0.0
+        write_pending("")
+
+    def pending_expired(self):
+        return bool(self.pending_text) and time.monotonic() >= self.pending_until
+
+    def confirm_pending(self):
+        text = self.pending_text
+        self.clear_pending()
+        if text:
+            self.send_to_chat(text)
+
+    def start_recording(self):
+        self.clear_pending()
+        with self.recording_lock:
+            if self.is_recording:
+                return
+            self.start_input_stream()
+            if not self.recording_stream:
+                return
+            with self.audio_lock:
+                self.audio_chunks = list(self.preroll)
+                self.is_recording = True
+            self.status = "recording"
 
     def stop_recording(self, send=True):
         with self.recording_lock:
-            if not self.is_recording:
-                return
-            self.is_recording = False
-            if self.recording_stream:
-                self.recording_stream.stop()
-                self.recording_stream.close()
-                self.recording_stream = None
-
-            pcm = self._drain_pcm()
+            with self.audio_lock:
+                if not self.is_recording:
+                    return
+                self.is_recording = False
+                pcm = b"".join(self.audio_chunks)
+                self.audio_chunks = []
             write_vu([0.0] * VU_BARS)
             self.status = "transcribing"
             if not pcm:
                 self.status = "listening"
                 return
 
-            pcm16 = self._resample_to_16k(pcm, self.sample_rate)
+            pcm16 = boost_pcm(vad_trim(spectral_denoise(highpass_pcm(resample_to_16k(pcm, self.sample_rate)))))
+            write_last_wav(pcm16, 16000)
             t0 = time.monotonic()
             text = self._inference(pcm16, 16000)
             logger.info("inference %.2fs (%d bytes)", time.monotonic() - t0, len(pcm16))
             if text and send:
-                self.send_to_chat(text)
+                self.offer_pending(text)
             self.status = "listening"
 
     def parse_channel_and_text(self, text):

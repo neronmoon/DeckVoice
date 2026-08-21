@@ -6,5 +6,6 @@ Bundled third-party components (produced by backend/ Docker build):
 - stb_image — MIT / public domain — https://github.com/nothings/stb
 - Microphone icon by Dave Gandy — CC BY 3.0 — https://www.flaticon.com/free-icon/microphone-black-shape_25682
 - sounddevice / numpy / certifi — see their PyPI licenses
+- webrtcvad-wheels — MIT — https://github.com/daanzu/py-webrtcvad-wheels
 
 Plugin source code is MIT.
